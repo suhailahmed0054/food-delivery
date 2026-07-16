@@ -1,442 +1,600 @@
 "use client";
 
+import { useCallback, useEffect, useState } from "react";
 import Image from "next/image";
-import { useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
+import { DineInScanner } from "@/components/DineInScanner";
 import {
-  Banknote,
+  RestaurantOfflineScreen,
+  RestaurantStatusLoadingScreen
+} from "@/components/RestaurantAvailabilityScreen";
+import {
+  DeliveryLocationSearch,
+  type DeliveryLocationSearchResult
+} from "@/components/DeliveryLocationSearch";
+import { fetchMenu, fetchPublicRestaurantSettings } from "@/lib/api";
+import { menuItems, restaurant } from "@/lib/data";
+import { clearTableSession } from "@/lib/table-session";
+import { useCartStore } from "@/store/cart-store";
+import {
+  DELIVERY_RADIUS_KM,
+  OUTSIDE_DELIVERY_MESSAGE,
+  evaluateDeliveryLocation
+} from "@/lib/delivery-zone";
+import {
+  persistSessionDeliveryLocation,
+  readSessionDeliveryLocation
+} from "@/lib/delivery-location-session";
+import { getPreciseCurrentPosition } from "@/lib/precise-geolocation";
+import {
+  AlertTriangle,
+  ArrowRight,
+  BadgePercent,
+  Bike,
+  CheckCircle2,
+  CircleHelp,
   Clock3,
-  CreditCard,
-  Download,
+  FileText,
+  HeadphonesIcon,
   Heart,
-  LocateFixed,
+  Home as HomeIcon,
+  Info,
+  LoaderCircle,
+  MapPin,
   MapPinned,
-  Minus,
-  Phone,
-  Plus,
-  Receipt,
+  Menu,
+  PhoneCall,
+  QrCode,
   Search,
   ShieldCheck,
   ShoppingCart,
   Star,
-  Timer,
-  Truck,
-  UserCircle
+  UtensilsCrossed,
+  UserCircle,
+  X
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { fetchMenu, createCheckout } from "@/lib/api";
-import { Category, MenuItem, categories, menuItems, orderTimeline, restaurant } from "@/lib/data";
-import { CartCustomization, useCartStore } from "@/store/cart-store";
 
-const paymentMethods = [
-  { id: "razorpay", label: "Razorpay", icon: CreditCard },
-  { id: "cod", label: "Cash on Delivery", icon: Banknote }
+type WelcomeLocationState = {
+  status: "idle" | "locating" | "eligible" | "outside" | "error";
+  label: string;
+  distanceKm?: number;
+};
+
+const profileLinks = [
+  { label: "Help & Support", href: "/support", icon: HeadphonesIcon },
+  { label: "FAQs", href: "/faqs", icon: CircleHelp },
+  { label: "About Al-Arab", href: "/about", icon: Info },
+  { label: "Terms & Conditions", href: "/terms", icon: FileText },
+  { label: "Privacy Policy", href: "/privacy", icon: ShieldCheck }
 ];
 
+const mobileNavigation = [
+  { label: "Home", description: "Return to welcome", href: "/", icon: HomeIcon },
+  { label: "Our Menu", description: "Explore every dish", href: "/mobile", icon: UtensilsCrossed },
+  { label: "Offers", description: "Today's best value", href: "/offers", icon: BadgePercent },
+  { label: "Wishlist", description: "Saved favorites", href: "/wishlist", icon: Heart },
+  { label: "Track Order", description: "Follow your feast", href: "/orders/track", icon: MapPinned },
+  { label: "My Profile", description: "Account and details", href: "/profile", icon: UserCircle }
+];
+
+const showcaseImages = [
+  {
+    label: "Chicken Mandi",
+    alt: "Al-Arab chicken mandi with saffron rice",
+    src: menuItems.find((item) => item.id === "chicken-mandi")?.image ?? "/images/al-arab-hero.png",
+    className: "editorial-showcase-card editorial-showcase-wide",
+    imageClassName: "object-[50%_52%]"
+  },
+  {
+    label: "Arabic Grill",
+    alt: "Al-Arab mixed Arabic grill platter",
+    src: menuItems.find((item) => item.id === "mixed-grill")?.image ?? "/images/al-arab-hero.png",
+    className: "editorial-showcase-card editorial-showcase-pill",
+    imageClassName: "object-[52%_50%]"
+  },
+  {
+    label: "Shawarma",
+    alt: "Al-Arab loaded chicken shawarma",
+    src: menuItems.find((item) => item.id === "shawarma")?.image ?? "/images/al-arab-hero.png",
+    className: "editorial-showcase-card editorial-showcase-circle",
+    imageClassName: "object-[50%_50%]"
+  },
+  {
+    label: "Cream Kunafa",
+    alt: "Al-Arab cream kunafa dessert",
+    src: menuItems.find((item) => item.id === "kunafa")?.image ?? "/images/al-arab-hero.png",
+    className: "editorial-showcase-card editorial-showcase-banner",
+    imageClassName: "object-[50%_58%]"
+  }
+];
+
+function compactPhone(phone: string) {
+  return phone.replace(/\s+/g, "");
+}
+
+function EchoStack({ text }: { text: string }) {
+  return (
+    <span className="echo-stack" aria-label={text}>
+      <span aria-hidden="true" className="echo-layer echo-layer-4">{text}</span>
+      <span aria-hidden="true" className="echo-layer echo-layer-3">{text}</span>
+      <span aria-hidden="true" className="echo-layer echo-layer-2">{text}</span>
+      <span aria-hidden="true" className="echo-layer echo-layer-1">{text}</span>
+      <span className="echo-front">{text}</span>
+    </span>
+  );
+}
+
 export default function Home() {
-  const [category, setCategory] = useState<"All" | Category>("All");
-  const [query, setQuery] = useState("");
-  const [promo, setPromo] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState("razorpay");
-  const [deliveryTime, setDeliveryTime] = useState("ASAP");
-  const [orderId, setOrderId] = useState("AR-1043");
-  const [selectedOptions, setSelectedOptions] = useState<Record<string, CartCustomization>>({});
-  const { data = menuItems } = useQuery<MenuItem[]>({ queryKey: ["menu"], queryFn: fetchMenu });
-  const { items, addItem, removeItem, setQuantity, applyPromo, clearCart, discount } = useCartStore();
-
-  const filteredMenu = data.filter((item) => {
-    const matchesCategory = category === "All" || item.category === category;
-    const search = query.trim().toLowerCase();
-    const matchesSearch =
-      !search || item.name.toLowerCase().includes(search) || item.category.toLowerCase().includes(search);
-    return matchesCategory && matchesSearch;
+  const router = useRouter();
+  const {
+    data: restaurantSettings,
+    isLoading: isRestaurantSettingsLoading,
+    isError: isRestaurantSettingsError
+  } = useQuery({
+    queryKey: ["restaurant-settings", "public"],
+    queryFn: fetchPublicRestaurantSettings,
+    refetchInterval: 5000,
+    refetchOnWindowFocus: "always",
+    staleTime: 2000
   });
+  const { data: liveMenu = [] } = useQuery({
+    queryKey: ["menu"],
+    queryFn: fetchMenu
+  });
+  const featuredItems = (
+    liveMenu.length > 0
+      ? liveMenu
+      : menuItems.map((item) => ({ ...item, rating: 0, reviews: 0 }))
+  )
+    .filter((item) => item.featured ?? item.available)
+    .slice(0, 4);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [showDineInScanner, setShowDineInScanner] = useState(false);
+  const [isLocationSearchOpen, setIsLocationSearchOpen] = useState(false);
+  const [deliveryLocation, setDeliveryLocation] = useState<WelcomeLocationState>({
+    status: "idle",
+    label: "Set your delivery location"
+  });
+  const { items } = useCartStore();
+  const cartCount = items.reduce((sum, item) => sum + item.quantity, 0);
+  const phoneHref = `tel:${compactPhone(restaurant.phone)}`;
 
-  const subtotal = useMemo(() => items.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0), [items]);
-  const discountAmount = Math.round(subtotal * discount);
-  const tax = Math.round((subtotal - discountAmount) * restaurant.taxRate);
-  const deliveryFee = subtotal >= restaurant.minimumOrder ? restaurant.deliveryFee : restaurant.deliveryFee + 30;
-  const total = Math.max(0, subtotal - discountAmount + tax + (subtotal > 0 ? deliveryFee : 0));
+  const chooseDelivery = useCallback(() => {
+    if (deliveryLocation.status === "outside") return;
+    clearTableSession();
+    router.push("/mobile");
+  }, [deliveryLocation.status, router]);
 
-  function optionsFor(item: MenuItem): CartCustomization {
-    return (
-      selectedOptions[item.id] ?? {
-        size: item.customization.sizes[0]?.name ?? "Regular",
-        spiceLevel: item.customization.spiceLevels[0] ?? "Regular",
-        addOns: []
-      }
-    );
-  }
+  const handleTableResolved = useCallback(() => {
+    router.push("/mobile");
+  }, [router]);
 
-  function updateOptions(item: MenuItem, changes: Partial<CartCustomization>) {
-    setSelectedOptions((current) => ({ ...current, [item.id]: { ...optionsFor(item), ...changes } }));
-  }
-
-  async function placeOrder() {
-    if (!total) return;
-    if (paymentMethod === "razorpay") {
-      await createCheckout(total);
+  const detectDeliveryLocation = useCallback(() => {
+    if (!("geolocation" in navigator)) {
+      setDeliveryLocation({
+        status: "error",
+        label: "Location is not supported on this device"
+      });
+      return;
     }
-    const nextId = `AR-${Math.floor(1000 + Math.random() * 9000)}`;
-    setOrderId(nextId);
-    clearCart();
-    alert(`Order confirmed. Your order ID is ${nextId}.`);
+
+    setDeliveryLocation({
+      status: "locating",
+      label: "Finding your current location..."
+    });
+
+    void getPreciseCurrentPosition()
+      .then(async (position) => {
+        const latitude = position.coords.latitude;
+        const longitude = position.coords.longitude;
+        const zone = evaluateDeliveryLocation({ lat: latitude, lng: longitude });
+        let displayName = "Current location";
+
+        try {
+          const response = await fetch(
+            `/api/reverse-geocode?lat=${encodeURIComponent(latitude)}&lng=${encodeURIComponent(longitude)}`
+          );
+          if (response.ok) {
+            const location = (await response.json()) as { displayName?: string };
+            displayName = location.displayName?.trim() || "Current location";
+          }
+        } catch {
+          // Coordinates remain valid even when reverse geocoding fails.
+        }
+
+        persistSessionDeliveryLocation({ latitude, longitude, displayName });
+        setDeliveryLocation({
+          status: zone.isWithinDeliveryZone ? "eligible" : "outside",
+          label: zone.isWithinDeliveryZone ? displayName : OUTSIDE_DELIVERY_MESSAGE,
+          distanceKm: zone.distanceKm
+        });
+      })
+      .catch((error: GeolocationPositionError | Error) => {
+        const permissionDenied =
+          "code" in error && error.code === 1;
+        setDeliveryLocation({
+          status: "error",
+          label: permissionDenied
+            ? "Allow location permission and try again"
+            : "Unable to detect location. Check GPS and retry"
+        });
+      });
+  }, []);
+
+  const selectSearchedLocation = useCallback((location: DeliveryLocationSearchResult) => {
+    const displayName = [location.name, location.subtitle].filter(Boolean).join(", ");
+    persistSessionDeliveryLocation({
+      latitude: location.latitude,
+      longitude: location.longitude,
+      displayName
+    });
+    setDeliveryLocation({
+      status: location.isWithinDeliveryZone ? "eligible" : "outside",
+      label: location.isWithinDeliveryZone ? displayName : OUTSIDE_DELIVERY_MESSAGE,
+      distanceKm: location.distanceKm
+    });
+    setIsLocationSearchOpen(false);
+  }, []);
+
+  useEffect(() => {
+    const storedLocation = readSessionDeliveryLocation();
+    if (!storedLocation) return;
+
+    const zone = evaluateDeliveryLocation({
+      lat: storedLocation.latitude,
+      lng: storedLocation.longitude
+    });
+    setDeliveryLocation({
+      status: zone.isWithinDeliveryZone ? "eligible" : "outside",
+      label: zone.isWithinDeliveryZone
+        ? storedLocation.displayName
+        : OUTSIDE_DELIVERY_MESSAGE,
+      distanceKm: zone.distanceKm
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileMenuOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsMobileMenuOpen(false);
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [isMobileMenuOpen]);
+
+  if (isRestaurantSettingsLoading && !isRestaurantSettingsError) {
+    return <RestaurantStatusLoadingScreen />;
   }
+
+  if (restaurantSettings && !restaurantSettings.restaurantOpen) {
+    return <RestaurantOfflineScreen settings={restaurantSettings} />;
+  }
+
+  const locationTone =
+    deliveryLocation.status === "eligible"
+      ? "is-eligible"
+      : deliveryLocation.status === "outside"
+        ? "is-outside"
+        : deliveryLocation.status === "error"
+          ? "is-error"
+          : "";
 
   return (
-    <main className="min-h-screen bg-background">
-      <section className="relative min-h-[88vh] overflow-hidden bg-[#152018] text-white">
-        <Image src="/images/al-arab-hero.png" alt="Al-Arab Restaurant food spread" fill priority className="object-cover" />
-        <div className="absolute inset-0 bg-gradient-to-r from-black/86 via-black/48 to-black/18" />
-        <header className="relative z-10 mx-auto flex w-full max-w-7xl items-center justify-between px-4 py-4 sm:px-6">
-          <div>
-            <p className="text-2xl font-black leading-none">Al-Arab Restaurant</p>
-            <p className="mt-1 text-xs uppercase tracking-[0.22em] text-white/72">Single restaurant delivery</p>
-          </div>
-          <nav className="hidden items-center gap-6 text-sm font-semibold text-white/82 lg:flex">
-            <a href="#menu">Menu</a>
-            <a href="#checkout">Checkout</a>
-            <a href="#tracking">Track</a>
-            <a href="#account">Account</a>
-          </nav>
-          <Button asChild variant="secondary">
-            <a href="#checkout">
-              <ShoppingCart size={18} />
-              {items.length}
-            </a>
-          </Button>
-        </header>
+    <main className="editorial-welcome min-h-screen overflow-x-clip">
+      <DineInScanner
+        open={showDineInScanner}
+        onClose={() => setShowDineInScanner(false)}
+        onTableResolved={handleTableResolved}
+      />
+      <DeliveryLocationSearch
+        open={isLocationSearchOpen}
+        isLocating={deliveryLocation.status === "locating"}
+        onClose={() => setIsLocationSearchOpen(false)}
+        onUseCurrentLocation={() => {
+          setIsLocationSearchOpen(false);
+          detectDeliveryLocation();
+        }}
+        onSelect={selectSearchedLocation}
+      />
 
-        <div className="relative z-10 mx-auto flex min-h-[70vh] w-full max-w-7xl items-center px-4 pb-12 sm:px-6">
-          <div className="max-w-3xl">
-            <div className="mb-5 flex flex-wrap gap-3">
-              <span className="rounded-md bg-white/14 px-3 py-2 text-sm font-bold backdrop-blur">
-                <Star size={15} className="mr-1 inline" fill="currentColor" /> {restaurant.rating} ({restaurant.reviews}+)
-              </span>
-              <span className="rounded-md bg-white/14 px-3 py-2 text-sm font-bold backdrop-blur">
-                <Clock3 size={15} className="mr-1 inline" /> {restaurant.deliveryTime}
-              </span>
-              <span className="rounded-md bg-white/14 px-3 py-2 text-sm font-bold backdrop-blur">
-                Delivery fee Rs {restaurant.deliveryFee}
-              </span>
-            </div>
-            <h1 className="text-5xl font-black leading-[1.04] sm:text-6xl lg:text-7xl">{restaurant.name}</h1>
-            <p className="mt-5 max-w-2xl text-lg leading-8 text-white/84">
-              Fresh mandi, grills, shawarma, desserts and beverages with real-time tracking, secure checkout and a mobile-first ordering experience.
-            </p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <Button asChild variant="secondary">
-                <a href="#menu">
-                  <Search size={18} />
-                  Start order
-                </a>
-              </Button>
-              <Button asChild variant="outline" className="border-white/40 bg-white/10 text-white hover:bg-white/18">
-                <a href="#tracking">
-                  <Truck size={18} />
-                  Track order
-                </a>
-              </Button>
-            </div>
-          </div>
+      <header className="editorial-header">
+        <Link href="/" className="editorial-brand" aria-label="Al-Arab home">
+          <span className="editorial-brand-mark">AA</span>
+          <span>
+            <span className="editorial-brand-name">Al-Arab</span>
+            <span className="editorial-brand-subtitle">Restaurant</span>
+          </span>
+        </Link>
+
+        <nav className="editorial-nav" aria-label="Homepage navigation">
+          <Link href="/mobile">Menu</Link>
+          <Link href="/checkout">Checkout</Link>
+          <Link href="/orders/track">Tracking</Link>
+        </nav>
+
+        <div className="editorial-header-actions">
+          <a href={phoneHref} className="editorial-contact">
+            <PhoneCall size={17} aria-hidden="true" />
+            <span>{restaurant.phone}</span>
+          </a>
+          <Link href="/checkout" className="editorial-cart" aria-label={`Cart with ${cartCount} items`}>
+            <ShoppingCart size={18} aria-hidden="true" />
+            <span>Cart</span>
+            {cartCount > 0 && <b>{cartCount}</b>}
+          </Link>
+          <Link href="/login" className="editorial-login">Sign In</Link>
+          <button
+            type="button"
+            className="editorial-profile"
+            onClick={() => setIsProfileOpen(true)}
+            aria-label="Open profile"
+          >
+            <UserCircle size={20} aria-hidden="true" />
+            <span>Profile</span>
+          </button>
+          <button
+            type="button"
+            className="editorial-menu-button"
+            onClick={() => setIsMobileMenuOpen(true)}
+            aria-label="Open menu"
+          >
+            <Menu size={22} aria-hidden="true" />
+          </button>
         </div>
-      </section>
+      </header>
 
-      <section id="menu" className="px-4 py-12 sm:px-6">
-        <div className="mx-auto max-w-7xl">
-          <div className="mb-6 grid gap-4 lg:grid-cols-[1fr_auto] lg:items-end">
-            <div>
-              <p className="font-bold text-secondary">Customer view</p>
-              <h2 className="text-3xl font-black">Menu</h2>
+      {isMobileMenuOpen && (
+        <div className="editorial-menu-overlay" role="dialog" aria-modal="true" aria-labelledby="editorial-menu-title">
+          <button
+            type="button"
+            aria-label="Close menu"
+            className="editorial-menu-backdrop"
+            onClick={() => setIsMobileMenuOpen(false)}
+          />
+          <aside className="editorial-menu-panel">
+            <div className="editorial-menu-top">
+              <h2 id="editorial-menu-title">Navigate</h2>
+              <button type="button" onClick={() => setIsMobileMenuOpen(false)} aria-label="Close menu">
+                <X size={22} aria-hidden="true" />
+              </button>
             </div>
-            <div className="relative w-full lg:w-[380px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={18} />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search food or category"
-                className="h-12 w-full rounded-md border border-border bg-white pl-10 pr-4 outline-none focus:ring-2 focus:ring-ring"
-              />
-            </div>
-          </div>
-
-          <div className="mb-6 flex gap-2 overflow-x-auto pb-1">
-            {(["All", ...categories] as Array<"All" | Category>).map((item) => (
-              <Button key={item} variant={category === item ? "default" : "outline"} size="sm" onClick={() => setCategory(item)}>
-                {item}
-              </Button>
-            ))}
-          </div>
-
-          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
-            {filteredMenu.map((item) => {
-              const options = optionsFor(item);
-              return (
-                <Card key={item.id} className="overflow-hidden">
-                  <div className="relative aspect-[4/3]">
-                    <Image src={item.image} alt={item.name} fill className="object-cover" />
-                    <span className={`absolute right-3 top-3 rounded-md px-2 py-1 text-xs font-black ${item.available ? "bg-white text-primary" : "bg-black/70 text-white"}`}>
-                      {item.available ? "Available" : "Out of stock"}
-                    </span>
-                  </div>
-                  <CardHeader>
-                    <div className="flex items-start justify-between gap-3">
-                      <CardTitle>{item.name}</CardTitle>
-                      <button aria-label={`Save ${item.name}`} className="rounded-md border border-border p-2 text-primary">
-                        <Heart size={17} />
-                      </button>
-                    </div>
-                    <p className="text-sm text-muted-foreground">{item.description}</p>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="mb-3 flex items-center justify-between text-sm">
-                      <span className="font-black">Rs {item.price}</span>
-                      <span className="flex items-center gap-1 font-semibold">
-                        <Star size={14} fill="currentColor" className="text-accent" /> {item.rating} ({item.reviews})
-                      </span>
-                    </div>
-                    <div className="grid gap-2 text-sm">
-                      <select
-                        value={options.size}
-                        onChange={(event) => updateOptions(item, { size: event.target.value })}
-                        className="h-10 rounded-md border border-border bg-white px-3"
-                      >
-                        {item.customization.sizes.map((size) => (
-                          <option key={size.name} value={size.name}>
-                            {size.name} {size.priceDelta ? `+ Rs ${size.priceDelta}` : ""}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={options.spiceLevel}
-                        onChange={(event) => updateOptions(item, { spiceLevel: event.target.value })}
-                        className="h-10 rounded-md border border-border bg-white px-3"
-                      >
-                        {item.customization.spiceLevels.map((level) => (
-                          <option key={level}>{level}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {item.customization.addOns.map((addOn) => {
-                        const checked = options.addOns.includes(addOn.name);
-                        return (
-                          <label key={addOn.name} className="flex cursor-pointer items-center gap-2 rounded-md border border-border px-2 py-1 text-xs">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => {
-                                updateOptions(item, {
-                                  addOns: checked ? options.addOns.filter((name) => name !== addOn.name) : [...options.addOns, addOn.name]
-                                });
-                              }}
-                            />
-                            {addOn.name} {addOn.price ? `+Rs ${addOn.price}` : ""}
-                          </label>
-                        );
-                      })}
-                    </div>
-                    <Button className="mt-4 w-full" disabled={!item.available} onClick={() => addItem(item, options)}>
-                      <Plus size={17} />
-                      Add to cart
-                    </Button>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
+            <nav aria-label="Mobile navigation">
+              {mobileNavigation.map((item) => (
+                <Link key={item.href} href={item.href} onClick={() => setIsMobileMenuOpen(false)}>
+                  <item.icon size={18} aria-hidden="true" />
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>{item.description}</small>
+                  </span>
+                </Link>
+              ))}
+            </nav>
+          </aside>
         </div>
-      </section>
+      )}
 
-      <section id="checkout" className="bg-[#f4f6ef] px-4 py-12 sm:px-6">
-        <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[1fr_420px]">
-          <div className="grid gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <MapPinned size={20} />
-                  Delivery details
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="grid gap-4">
-                <input className="h-12 rounded-md border border-border px-4" placeholder="Full name" />
-                <input className="h-12 rounded-md border border-border px-4" placeholder="Phone number" />
-                <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-                  <input className="h-12 rounded-md border border-border px-4" placeholder="Delivery address" />
-                  <Button variant="outline">
-                    <LocateFixed size={18} />
-                    Map pin
-                  </Button>
-                </div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <select value={deliveryTime} onChange={(event) => setDeliveryTime(event.target.value)} className="h-12 rounded-md border border-border px-4">
-                    <option>ASAP</option>
-                    <option>Today 7:30 PM</option>
-                    <option>Today 8:30 PM</option>
-                    <option>Tomorrow 1:00 PM</option>
-                  </select>
-                  <textarea className="min-h-24 rounded-md border border-border p-4" placeholder="Special instructions for kitchen or rider" />
-                </div>
-                <div className="rounded-md border border-border bg-white p-4">
-                  <p className="mb-3 font-bold">Payment method</p>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {paymentMethods.map((method) => (
-                      <button
-                        key={method.id}
-                        onClick={() => setPaymentMethod(method.id)}
-                        className={`flex h-12 items-center justify-center gap-2 rounded-md border font-bold ${paymentMethod === method.id ? "border-primary bg-primary text-white" : "border-border bg-white"}`}
-                      >
-                        <method.icon size={18} />
-                        {method.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+      {isProfileOpen && (
+        <div className="editorial-menu-overlay" role="dialog" aria-modal="true" aria-labelledby="profile-title">
+          <button
+            type="button"
+            aria-label="Close profile menu"
+            className="editorial-menu-backdrop"
+            onClick={() => setIsProfileOpen(false)}
+          />
+          <aside className="editorial-menu-panel">
+            <div className="editorial-menu-top">
+              <h2 id="profile-title">My Profile</h2>
+              <button type="button" onClick={() => setIsProfileOpen(false)} aria-label="Close profile menu">
+                <X size={22} aria-hidden="true" />
+              </button>
+            </div>
+            <nav aria-label="Profile links">
+              {profileLinks.map((item) => (
+                <Link key={item.href} href={item.href} onClick={() => setIsProfileOpen(false)}>
+                  <item.icon size={18} aria-hidden="true" />
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>Al-Arab customer care</small>
+                  </span>
+                </Link>
+              ))}
+            </nav>
+          </aside>
+        </div>
+      )}
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <ShieldCheck size={20} />
-                  Account
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="grid gap-3 md:grid-cols-3">
-                {["Email / phone login", "Saved addresses", "Order history and reorder"].map((item) => (
-                  <div key={item} className="rounded-md border border-border p-4 text-sm font-semibold">
-                    <UserCircle className="mb-3 text-primary" size={22} />
-                    {item}
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          </div>
+      <section className="editorial-hero" aria-labelledby="welcome-heading">
+        <div className="editorial-hero-inner">
+          <p className="editorial-kicker">A feast for every sense</p>
+          <h1 id="welcome-heading" className="editorial-hero-title">
+            <span>Welcome to</span>
+            <EchoStack text="Al-Arab" />
+          </h1>
+          <p className="editorial-hero-copy">
+            Fire-kissed grills, fragrant mandi, and recipes carried through generations.
+          </p>
 
-          <Card className="h-fit">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <ShoppingCart size={20} />
-                Cart summary
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {items.length === 0 ? (
-                  <p className="rounded-md bg-muted p-4 text-sm text-muted-foreground">Add items to begin checkout.</p>
+          <div className="editorial-order-panel" aria-label="Ordering actions">
+            <button
+              type="button"
+              onClick={() => setIsLocationSearchOpen(true)}
+              className={`editorial-location ${locationTone}`}
+            >
+              <span>
+                {deliveryLocation.status === "locating" ? (
+                  <LoaderCircle size={18} className="animate-spin" />
+                ) : deliveryLocation.status === "eligible" ? (
+                  <CheckCircle2 size={18} />
+                ) : deliveryLocation.status === "outside" || deliveryLocation.status === "error" ? (
+                  <AlertTriangle size={18} />
                 ) : (
-                  items.map((line) => (
-                    <div key={line.lineId} className="border-b border-border pb-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="font-bold">{line.item.name}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {line.customization.size}, {line.customization.spiceLevel}
-                            {line.customization.addOns.length ? `, ${line.customization.addOns.join(", ")}` : ""}
-                          </p>
-                          <p className="mt-1 text-sm font-semibold">Rs {line.unitPrice}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Button size="icon" variant="outline" onClick={() => setQuantity(line.lineId, line.quantity - 1)}>
-                            <Minus size={15} />
-                          </Button>
-                          <span className="w-5 text-center font-bold">{line.quantity}</span>
-                          <Button size="icon" variant="outline" onClick={() => setQuantity(line.lineId, line.quantity + 1)}>
-                            <Plus size={15} />
-                          </Button>
-                        </div>
-                      </div>
-                      <button className="mt-2 text-sm font-bold text-secondary" onClick={() => removeItem(line.lineId)}>
-                        Remove
-                      </button>
-                    </div>
-                  ))
+                  <MapPin size={18} />
                 )}
-              </div>
+              </span>
+              <strong>
+                {deliveryLocation.status === "eligible"
+                  ? `Delivery available - ${deliveryLocation.distanceKm?.toFixed(1)} km`
+                  : deliveryLocation.status === "outside"
+                    ? "Outside delivery area"
+                    : `Delivery within ${DELIVERY_RADIUS_KM} km`}
+              </strong>
+              <small>{deliveryLocation.label}</small>
+            </button>
 
-              <div className="mt-5 flex gap-2">
-                <input value={promo} onChange={(event) => setPromo(event.target.value)} className="h-11 min-w-0 flex-1 rounded-md border border-border px-3" placeholder="Promo code" />
-                <Button variant="outline" onClick={() => applyPromo(promo)}>
-                  Apply
-                </Button>
-              </div>
-              <p className="mt-2 text-xs text-muted-foreground">Try ALARAB10 for 10% off.</p>
-
-              <div className="mt-5 space-y-2 text-sm">
-                <div className="flex justify-between"><span>Subtotal</span><span>Rs {subtotal}</span></div>
-                <div className="flex justify-between"><span>Discount</span><span>- Rs {discountAmount}</span></div>
-                <div className="flex justify-between"><span>GST 5%</span><span>Rs {tax}</span></div>
-                <div className="flex justify-between"><span>Delivery fee</span><span>Rs {subtotal ? deliveryFee : 0}</span></div>
-                <div className="flex justify-between border-t border-border pt-3 text-lg font-black"><span>Total</span><span>Rs {total}</span></div>
-              </div>
-
-              <Button className="mt-5 w-full" disabled={!total} onClick={placeOrder}>
-                <Receipt size={18} />
-                Confirm order
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-      </section>
-
-      <section id="tracking" className="px-4 py-12 sm:px-6">
-        <div className="mx-auto max-w-7xl">
-          <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-end">
-            <div>
-              <p className="font-bold text-secondary">Order confirmation</p>
-              <h2 className="text-3xl font-black">Track order {orderId}</h2>
+            <div className="editorial-order-actions">
+              <button
+                type="button"
+                onClick={chooseDelivery}
+                disabled={deliveryLocation.status === "outside"}
+              >
+                <Bike size={18} aria-hidden="true" />
+                Delivery
+              </button>
+              <button type="button" onClick={() => setShowDineInScanner(true)}>
+                <QrCode size={18} aria-hidden="true" />
+                Dine-in
+              </button>
+              <Link href="/mobile">
+                <Search size={18} aria-hidden="true" />
+                Menu
+              </Link>
             </div>
-            <Button variant="outline">
-              <Download size={18} />
-              Download receipt
-            </Button>
-          </div>
-          <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
-            <Card>
-              <CardContent className="pt-5">
-                <div className="grid gap-4 md:grid-cols-5">
-                  {orderTimeline.map((step, index) => (
-                    <div key={step} className="rounded-md border border-border p-4">
-                      <div className={`mb-4 h-2 rounded-full ${index < 3 ? "bg-primary" : "bg-muted"}`} />
-                      <p className="text-sm font-black">{step} {index < 2 ? "✓" : ""}</p>
-                      <p className="mt-2 text-xs text-muted-foreground">{index < 3 ? "Updated live" : "Waiting"}</p>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-6 grid gap-4 md:grid-cols-2">
-                  <div className="rounded-md bg-[#1b2a24] p-5 text-white">
-                    <MapPinned className="mb-4 text-accent" />
-                    <p className="font-black">Live delivery map</p>
-                    <p className="mt-2 text-sm text-white/72">Map provider placeholder for rider and restaurant locations.</p>
-                  </div>
-                  <div className="rounded-md border border-border p-5">
-                    <Timer className="mb-4 text-primary" />
-                    <p className="font-black">Estimated arrival</p>
-                    <p className="mt-2 text-3xl font-black">22 min</p>
-                    <Button className="mt-4" variant="outline">
-                      <Phone size={18} />
-                      Contact agent
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle>After delivery</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <textarea className="min-h-28 w-full rounded-md border border-border p-3" placeholder="Rate and review your order" />
-                <Button className="mt-3 w-full" variant="secondary">
-                  <Star size={18} />
-                  Submit review
-                </Button>
-              </CardContent>
-            </Card>
           </div>
         </div>
       </section>
+
+      <section id="philosophy" className="editorial-section editorial-philosophy">
+        <div className="editorial-hairline" aria-hidden="true" />
+        <p className="editorial-kicker">Philosophy</p>
+        <h2>
+          Food should feel <em>precise</em>, generous, and unmistakably memorable.
+        </h2>
+        <div className="editorial-principles">
+          <article>
+            <h3>01. Fire</h3>
+            <p>Grills, shawarma, and mandi prepared for depth rather than noise.</p>
+          </article>
+          <article>
+            <h3>02. Timing</h3>
+            <p>Fast ordering paths for delivery, dine-in, tracking, and support.</p>
+          </article>
+          <article>
+            <h3>03. Warmth</h3>
+            <p>A modern customer flow wrapped around traditional Arabic hospitality.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="showcase" className="editorial-section editorial-showcase">
+        <div className="editorial-section-heading">
+          <p className="editorial-kicker">Showcase</p>
+          <h2>Earthy structure. Fire where it matters.</h2>
+        </div>
+        <div className="editorial-showcase-grid">
+          {showcaseImages.map((image) => (
+            <figure key={image.label} className={image.className}>
+              <Image
+                src={image.src}
+                alt={image.alt}
+                fill
+                sizes="(max-width: 768px) 100vw, 50vw"
+                className={image.imageClassName}
+              />
+              <figcaption>{image.label}</figcaption>
+            </figure>
+          ))}
+        </div>
+      </section>
+
+      <section id="services" className="editorial-section editorial-services">
+        <div className="editorial-section-heading">
+          <p className="editorial-kicker">Services</p>
+          <h2>Everything important, without visual clutter.</h2>
+        </div>
+        <div className="editorial-service-grid">
+          <article>
+            <span className="editorial-geo-icon">01</span>
+            <h3>Delivery</h3>
+            <p>Set your location, confirm the delivery radius, and enter the menu.</p>
+            <button type="button" onClick={() => setIsLocationSearchOpen(true)}>
+              Set location <ArrowRight size={16} />
+            </button>
+          </article>
+          <article>
+            <span className="editorial-geo-icon">02</span>
+            <h3>Dine-in QR</h3>
+            <p>Scan a table QR and continue ordering from the customer menu.</p>
+            <button type="button" onClick={() => setShowDineInScanner(true)}>
+              Scan table <ArrowRight size={16} />
+            </button>
+          </article>
+          <article>
+            <span className="editorial-geo-icon">03</span>
+            <h3>Customer Care</h3>
+            <p>Support, FAQs, order tracking, and profile links stay one tap away.</p>
+            <Link href="/support">
+              Get support <ArrowRight size={16} />
+            </Link>
+          </article>
+        </div>
+      </section>
+
+      <section className="editorial-section editorial-featured">
+        <div className="editorial-section-heading">
+          <p className="editorial-kicker">Featured</p>
+          <h2>The table favorites.</h2>
+        </div>
+        <div className="editorial-featured-grid">
+          {featuredItems.map((item) => (
+            <Link key={item.id} href="/mobile" className="editorial-dish">
+              <span>{item.name}</span>
+              <small>Rs {item.price}</small>
+              <b>
+                <Star size={13} className={item.reviews > 0 ? "fill-current" : ""} />
+                {item.reviews > 0
+                  ? `${item.rating} (${item.reviews})`
+                  : "New"}
+              </b>
+            </Link>
+          ))}
+        </div>
+      </section>
+
+      <footer className="editorial-footer">
+        <div>
+          <h2>Al-Arab</h2>
+          <p>Premium Arabic food delivery, dine-in ordering, and customer support.</p>
+        </div>
+        <nav aria-label="Footer navigation">
+          <h3>Navigate</h3>
+          <Link href="/mobile">Menu</Link>
+          <Link href="/checkout">Checkout</Link>
+          <Link href="/orders/track">Track Order</Link>
+        </nav>
+        <nav aria-label="Company links">
+          <h3>Company</h3>
+          <Link href="/about">About</Link>
+          <Link href="/terms">Terms</Link>
+          <Link href="/privacy">Privacy</Link>
+        </nav>
+        <address>
+          <h3>Contact</h3>
+          <a href={phoneHref}><PhoneCall size={16} /> {restaurant.phone}</a>
+          <span><Clock3 size={16} /> Lunch to late evening</span>
+          <span><MapPin size={16} /> Bengaluru service area</span>
+        </address>
+      </footer>
     </main>
   );
 }

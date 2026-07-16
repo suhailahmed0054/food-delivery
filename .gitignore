@@ -1,9 +1,11 @@
 node_modules/
+.tools/
 
 # Build output
 .next/
 dist/
 build/
+*.tsbuildinfo
 
 # Logs
 *.log
@@ -17,6 +19,20 @@ pnpm-debug.log*
 .env.local
 .env.*.local
 
+# Local runtime data (orders, accounts, support evidence, tokens, and QR secrets)
+apps/api/data/
+
 # OS/editor
 .DS_Store
 Thumbs.db
+.vscode/
+
+# Local audit and visual verification output
+.codex-logs/
+artifacts/
+*-preview.png
+apps/web/app/page-old.tsx
+apps/web/public/images/al-arab-bg.png
+
+# Database backups are generated locally or uploaded by CI
+backups/

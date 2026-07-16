@@ -11,9 +11,18 @@
     "dev:api": "npm run dev -w apps/api",
     "build": "npm run build -w apps/web && npm run build -w apps/api",
     "lint": "npm run lint -w apps/web",
-    "typecheck": "npm run typecheck -w apps/api"
+    "typecheck": "npm run typecheck -w apps/web && npm run typecheck -w apps/api",
+    "verify": "npm run lint && npm run typecheck && npm run build && npm audit --audit-level=high",
+    "smoke": "node scripts/smoke-test.mjs",
+    "verify:production": "npm run verify-production -w apps/api",
+    "release:check": "node scripts/release-check.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
+  },
+  "dependencies": {
+    "framer-motion": "^12.42.0",
+    "leaflet": "^1.9.4",
+    "react-leaflet": "^5.0.0"
   }
 }

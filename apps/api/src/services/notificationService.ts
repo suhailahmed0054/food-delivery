@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import Twilio from "twilio";
 import { env } from "../config/env";
 
 export async function sendOrderEmail(to: string, subject: string, html: string) {
@@ -18,9 +19,29 @@ export async function sendOrderEmail(to: string, subject: string, html: string) 
 }
 
 export async function sendSms(phone: string, message: string) {
-  console.log(`SMS placeholder for ${phone}: ${message}`);
+  if (!env.twilioAccountSid || !env.twilioAuthToken || !env.twilioFrom) {
+    console.log(`SMS skipped (Twilio not configured): ${phone} -> ${message}`);
+    return;
+  }
+
+  const client = Twilio(env.twilioAccountSid, env.twilioAuthToken);
+  await client.messages.create({
+    body: message,
+    from: env.twilioFrom,
+    to: phone
+  });
 }
 
 export async function sendWhatsApp(phone: string, message: string) {
-  console.log(`WhatsApp placeholder for ${phone}: ${message}`);
+  if (!env.twilioAccountSid || !env.twilioAuthToken || !env.twilioFrom) {
+    console.log(`WhatsApp skipped (Twilio not configured): ${phone} -> ${message}`);
+    return;
+  }
+
+  const client = Twilio(env.twilioAccountSid, env.twilioAuthToken);
+  await client.messages.create({
+    body: message,
+    from: `whatsapp:${env.twilioFrom}`,
+    to: `whatsapp:${phone}`
+  });
 }

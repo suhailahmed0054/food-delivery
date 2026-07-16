@@ -1,0 +1,38 @@
+name: MongoDB logical backup
+
+on:
+  schedule:
+    - cron: "30 20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create encrypted backup archive
+        env:
+          MONGODB_URI: ${{ secrets.PRODUCTION_MONGODB_URI }}
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          test -n "$MONGODB_URI"
+          test -n "$BACKUP_ENCRYPTION_PASSPHRASE"
+          mkdir -p backups
+          docker run --rm -e MONGODB_URI -v "$PWD/backups:/backups" mongo:8 \
+            bash -lc 'mongodump --uri="$MONGODB_URI" --archive=/backups/al-arab-$(date -u +%Y%m%dT%H%M%SZ).archive.gz --gzip'
+          for archive in backups/*.archive.gz; do
+            gpg --batch --yes --pinentry-mode loopback \
+              --passphrase "$BACKUP_ENCRYPTION_PASSPHRASE" \
+              --symmetric --cipher-algo AES256 "$archive"
+            rm "$archive"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mongodb-backup-${{ github.run_id }}
+          path: backups/*.archive.gz.gpg
+          if-no-files-found: error
+          retention-days: 14

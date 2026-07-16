@@ -1,13 +1,39 @@
 import type { NextConfig } from "next";
 
+if (process.env.NODE_ENV === "production") {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL?.trim() ?? "";
+  let secureApiUrl = false;
+  try {
+    secureApiUrl = new URL(apiUrl).protocol === "https:";
+  } catch {
+    secureApiUrl = false;
+  }
+  if (!secureApiUrl) {
+    throw new Error("NEXT_PUBLIC_API_URL must be configured as a valid HTTPS URL for production");
+  }
+}
+
 const nextConfig: NextConfig = {
   images: {
-    remotePatterns: [
+    remotePatterns: (process.env.NEXT_PUBLIC_MENU_IMAGE_HOSTS ?? "images.unsplash.com")
+      .split(",")
+      .map((hostname) => hostname.trim().toLowerCase())
+      .filter((hostname) => /^[a-z0-9.-]+$/.test(hostname))
+      .map((hostname) => ({ protocol: "https" as const, hostname }))
+  },
+  async headers() {
+    return [
       {
-        protocol: "https",
-        hostname: "images.unsplash.com"
+        source: "/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Permissions-Policy", value: "camera=(self), geolocation=(self), microphone=()" },
+          { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" }
+        ]
       }
-    ]
+    ];
   }
 };
 

@@ -7,7 +7,7 @@ const menuItemSchema = new Schema(
     price: { type: Number, required: true },
     description: { type: String, required: true },
     image: { type: String, required: true },
-    rating: { type: Number, default: 4.5 },
+    rating: { type: Number, default: 0 },
     reviews: { type: Number, default: 0 },
     ingredients: [String],
     allergens: [String],
@@ -20,5 +20,7 @@ const menuItemSchema = new Schema(
   },
   { timestamps: true }
 );
+
+menuItemSchema.index({ category: 1, name: 1 });
 
 export const MenuItem = mongoose.models.MenuItem || mongoose.model("MenuItem", menuItemSchema);

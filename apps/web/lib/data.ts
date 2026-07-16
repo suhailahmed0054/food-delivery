@@ -6,6 +6,9 @@ export type MenuItem = {
   category: Category;
   price: number;
   available: boolean;
+  bestSeller?: boolean;
+  featured?: boolean;
+  todaySpecial?: boolean;
   rating: number;
   reviews: number;
   image: string;
@@ -27,7 +30,7 @@ export const restaurant = {
   deliveryFee: 39,
   minimumOrder: 199,
   taxRate: 0.05,
-  address: "Banjara Hills, Hyderabad",
+  address: "Vijayapura,Devanahalli,karnataka-562135",
   phone: "+91 98765 43210"
 };
 
@@ -40,6 +43,9 @@ export const menuItems: MenuItem[] = [
     category: "Appetizers",
     price: 149,
     available: true,
+    bestSeller: true,
+    featured: true,
+    todaySpecial: true,
     rating: 4.5,
     reviews: 320,
     image: "https://images.unsplash.com/photo-1577906096429-f73c2c312435?auto=format&fit=crop&w=900&q=80",
@@ -64,9 +70,12 @@ export const menuItems: MenuItem[] = [
     category: "Appetizers",
     price: 199,
     available: true,
+    bestSeller: true,
+    featured: true,
+    todaySpecial: false,
     rating: 4.4,
     reviews: 214,
-    image: "https://images.unsplash.com/photo-1593001874117-c99c800e3eb9?auto=format&fit=crop&w=900&q=80",
+    image: "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=900&q=80",
     description: "Crisp falafel, tahini dip, pickles, salad and fresh bread.",
     ingredients: ["Chickpeas", "Parsley", "Tahini", "Pickles"],
     allergens: ["Sesame", "Gluten"],
@@ -88,9 +97,12 @@ export const menuItems: MenuItem[] = [
     category: "Mains",
     price: 349,
     available: true,
+    bestSeller: true,
+    featured: true,
+    todaySpecial: true,
     rating: 4.8,
     reviews: 710,
-    image: "https://images.unsplash.com/photo-1677686707390-9c56626c7fbd?auto=format&fit=crop&w=900&q=80",
+    image: "https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=900&q=80",
     description: "Smoky mandi rice, tender chicken, salata and garlic sauce.",
     ingredients: ["Chicken", "Basmati rice", "Mandi spice", "Saffron"],
     allergens: ["Dairy"],
@@ -114,6 +126,9 @@ export const menuItems: MenuItem[] = [
     category: "Mains",
     price: 549,
     available: true,
+    bestSeller: true,
+    featured: true,
+    todaySpecial: false,
     rating: 4.9,
     reviews: 540,
     image: "https://images.unsplash.com/photo-1541518763669-27fef04b14ea?auto=format&fit=crop&w=900&q=80",
@@ -138,6 +153,9 @@ export const menuItems: MenuItem[] = [
     category: "Mains",
     price: 699,
     available: true,
+    bestSeller: true,
+    featured: true,
+    todaySpecial: true,
     rating: 4.7,
     reviews: 430,
     image: "https://images.unsplash.com/photo-1529692236671-f1f6cf9683ba?auto=format&fit=crop&w=900&q=80",
@@ -162,6 +180,9 @@ export const menuItems: MenuItem[] = [
     category: "Mains",
     price: 179,
     available: true,
+    bestSeller: true,
+    featured: true,
+    todaySpecial: false,
     rating: 4.6,
     reviews: 620,
     image: "https://images.unsplash.com/photo-1662116765994-1e4200c43589?auto=format&fit=crop&w=900&q=80",
@@ -186,6 +207,9 @@ export const menuItems: MenuItem[] = [
     category: "Desserts",
     price: 249,
     available: true,
+    bestSeller: false,
+    featured: true,
+    todaySpecial: false,
     rating: 4.9,
     reviews: 302,
     image: "https://images.unsplash.com/photo-1627308595229-7830a5c91f9f?auto=format&fit=crop&w=900&q=80",
@@ -210,6 +234,9 @@ export const menuItems: MenuItem[] = [
     category: "Beverages",
     price: 99,
     available: false,
+    bestSeller: false,
+    featured: false,
+    todaySpecial: false,
     rating: 4.3,
     reviews: 115,
     image: "https://images.unsplash.com/photo-1621263764928-df1444c5e859?auto=format&fit=crop&w=900&q=80",

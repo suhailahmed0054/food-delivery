@@ -1,23 +1,44 @@
-import { NextFunction, Request, Response } from "express";
+import { createHash } from "crypto";
+import type { Request } from "express";
+import {
+  ipKeyGenerator,
+  rateLimit as expressRateLimit,
+  type Options
+} from "express-rate-limit";
+import { createRateLimitStore } from "../services/redisService";
 
-const hits = new Map<string, { count: number; resetAt: number }>();
+type RateLimitKey = (req: Request) => string;
 
-export function rateLimit(maxRequests = 120, windowMs = 60_000) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const key = req.ip ?? "unknown";
-    const now = Date.now();
-    const current = hits.get(key);
+function normalizedIp(req: Request) {
+  return ipKeyGenerator(req.ip ?? "unknown");
+}
 
-    if (!current || current.resetAt < now) {
-      hits.set(key, { count: 1, resetAt: now + windowMs });
-      return next();
-    }
+export function accountRateLimitKey(req: Request) {
+  const email = typeof req.body?.email === "string"
+    ? req.body.email.trim().toLowerCase()
+    : "unknown";
+  const accountHash = createHash("sha256").update(email).digest("hex").slice(0, 20);
+  return `${normalizedIp(req)}:${accountHash}`;
+}
 
-    if (current.count >= maxRequests) {
-      return res.status(429).json({ message: "Too many requests. Please try again shortly." });
-    }
-
-    current.count += 1;
-    return next();
+export function rateLimit(
+  maxRequests = 120,
+  windowMs = 60_000,
+  name = "global",
+  keyGenerator: RateLimitKey = normalizedIp
+) {
+  const options: Partial<Options> = {
+    windowMs,
+    limit: maxRequests,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator,
+    handler: (_req, res) => {
+      res.status(429).json({ message: "Too many requests. Please try again shortly." });
+    },
+    passOnStoreError: false
   };
+  const store = createRateLimitStore(`al-arab:${name}:`);
+  if (store) options.store = store;
+  return expressRateLimit(options);
 }

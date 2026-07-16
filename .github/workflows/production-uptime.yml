@@ -1,0 +1,36 @@
+name: Production uptime
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DEPLOYMENT_WEB_URL: ${{ secrets.PRODUCTION_WEB_URL }}
+      DEPLOYMENT_API_URL: ${{ secrets.PRODUCTION_API_URL }}
+      UPTIME_ALERT_WEBHOOK_URL: ${{ secrets.UPTIME_ALERT_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: smoke
+        continue-on-error: true
+        run: node scripts/smoke-test.mjs
+      - name: Send failure alert
+        if: steps.smoke.outcome == 'failure' && env.UPTIME_ALERT_WEBHOOK_URL != ''
+        run: >-
+          curl --fail --silent --show-error
+          -H "Content-Type: application/json"
+          -d '{"service":"al-arab","event":"uptime_check_failed","severity":"fatal"}'
+          "$UPTIME_ALERT_WEBHOOK_URL"
+      - name: Fail workflow after alert
+        if: steps.smoke.outcome == 'failure'
+        run: exit 1
