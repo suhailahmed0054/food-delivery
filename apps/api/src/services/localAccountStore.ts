@@ -23,8 +23,7 @@ export type LocalAccount = {
   id: string;
   name: string;
   email: string;
-  passwordHash?: string;
-  googleId?: string;
+  emailVerified: boolean;
   phone?: string;
   role: UserRole;
   addresses: CustomerAddress[];
@@ -91,8 +90,7 @@ export async function findLocalAccountByEmail(email: string) {
 export async function createLocalAccount(input: {
   name: string;
   email: string;
-  passwordHash?: string;
-  googleId?: string;
+  emailVerified?: boolean;
 }) {
   const accounts = await listLocalAccounts();
   const email = normalizeEmail(input.email);
@@ -103,8 +101,7 @@ export async function createLocalAccount(input: {
     id: `customer-${randomUUID()}`,
     name: input.name.trim(),
     email,
-    passwordHash: input.passwordHash,
-    googleId: input.googleId,
+    emailVerified: input.emailVerified ?? false,
     role: "customer",
     addresses: [],
     notificationPreferences: { orderUpdates: true, offers: true },
@@ -142,17 +139,4 @@ export async function updateLocalAccount(
   };
   await writeLocalAccounts(accounts);
   return accounts[index];
-}
-
-export async function upsertLocalGoogleAccount(input: {
-  name: string;
-  email: string;
-  googleId: string;
-}) {
-  const existing = await findLocalAccountByEmail(input.email);
-  if (!existing) return createLocalAccount(input);
-  return updateLocalAccount(existing.id, {
-    name: input.name.trim(),
-    googleId: input.googleId
-  });
 }

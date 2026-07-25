@@ -1,5 +1,4 @@
 import { randomUUID } from "crypto";
-import bcrypt from "bcryptjs";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { Order } from "../models/Order";
@@ -42,11 +41,6 @@ const addressSchema = z.object({
 const notificationSchema = z.object({
   orderUpdates: z.boolean(),
   offers: z.boolean()
-});
-
-const passwordSchema = z.object({
-  currentPassword: z.string().min(1).max(72),
-  newPassword: z.string().min(8).max(72)
 });
 
 const claimOrdersSchema = z.object({
@@ -224,27 +218,6 @@ export async function updateCustomerNotifications(req: Request, res: Response) {
       });
   if (!account) return res.status(404).json({ message: "Account not found" });
   return res.json(parsed.data);
-}
-
-export async function changeCustomerPassword(req: Request, res: Response) {
-  const parsed = passwordSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ message: "The new password must be at least 8 characters" });
-  }
-  const account = await getAccount(req);
-  if (!account?.passwordHash) {
-    return res.status(400).json({ message: "This account uses an external sign-in provider" });
-  }
-  if (!(await bcrypt.compare(parsed.data.currentPassword, account.passwordHash))) {
-    return res.status(400).json({ message: "Current password is incorrect" });
-  }
-  const passwordHash = await bcrypt.hash(parsed.data.newPassword, 10);
-  if (isMongoConnected()) {
-    await User.findByIdAndUpdate(accountId(req), { passwordHash });
-  } else {
-    await updateLocalAccount(accountId(req), { passwordHash });
-  }
-  return res.status(204).send();
 }
 
 export async function listCustomerOrders(req: Request, res: Response) {

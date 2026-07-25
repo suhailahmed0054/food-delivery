@@ -10,8 +10,12 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: CLIENT_URL
-        sync: false
+      - key: CUSTOMER_APP_URL
+        value: https://al-arabrestaurant.cc.cd
+      - key: ADMIN_APP_URL
+        value: https://admin.al-arabrestaurant.cc.cd
+      - key: API_PUBLIC_URL
+        value: https://api.al-arabrestaurant.cc.cd
       - key: MONGODB_URI
         sync: false
       - key: REDIS_URL
@@ -23,21 +27,23 @@ services:
         generateValue: true
       - key: JWT_REFRESH_SECRET
         generateValue: true
-      - key: ADMIN_EMAIL
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: OTP_HASH_SECRET
+        generateValue: true
+      - key: RESEND_API_KEY
         sync: false
-      - key: ADMIN_PASSWORD
-        sync: false
-      - key: RAZORPAY_KEY_ID
-        sync: false
-      - key: RAZORPAY_KEY_SECRET
-        sync: false
-      - key: RAZORPAY_WEBHOOK_SECRET
+      - key: EMAIL_FROM
         sync: false
       - key: TRUST_PROXY_HOPS
         value: "1"
       - key: MENU_IMAGE_HOSTS
-        value: images.unsplash.com
-      - key: ALERT_WEBHOOK_URL
+        value: images.unsplash.com,res.cloudinary.com
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
         sync: false
 
   - type: keyvalue

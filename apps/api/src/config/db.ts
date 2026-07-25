@@ -1,3 +1,4 @@
+import { configureMongoDns } from "./mongoDns";
 import mongoose from "mongoose";
 import { env } from "./env";
 
@@ -32,15 +33,26 @@ export function isDatabaseConnected() {
   return mongoose.connection.readyState === 1;
 }
 
-export async function connectDatabase() {
+export async function connectDatabase(
+  options: { runStartupMaintenance?: boolean } = {}
+) {
   if (!env.mongoUri) {
+    if (env.isProduction) {
+      throw new Error("MongoDB connection failed: MONGODB_URI is not configured");
+    }
     console.warn("MONGODB_URI is not set. API will run with local demo data.");
     return false;
   }
 
   try {
-    await mongoose.connect(env.mongoUri, { serverSelectionTimeoutMS: 10_000 });
-    await quarantineLegacySimulatedRefunds();
+    configureMongoDns();
+    await mongoose.connect(env.mongoUri, {
+      dbName: env.mongoDatabaseName,
+      serverSelectionTimeoutMS: 10_000
+    });
+    if (options.runStartupMaintenance !== false) {
+      await quarantineLegacySimulatedRefunds();
+    }
     console.log("MongoDB connected");
     return true;
   } catch (error) {

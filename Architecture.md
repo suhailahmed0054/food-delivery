@@ -649,34 +649,16 @@ flowchart TB
 
 ## 21. Environment Variables
 
-Illustrative names:
+The implemented environment-variable inventory is maintained in
+`docs/ENVIRONMENT_VARIABLE_AUDIT.md`, with copyable templates in
+`apps/api/.env.production.example` and
+`apps/web/.env.production.example`. This supersedes the earlier illustrative
+PostgreSQL, Stripe, Google Maps, and Google OAuth variable names that were never
+implemented in this application.
 
-```text
-# Web
-NEXT_PUBLIC_API_URL=
-NEXT_PUBLIC_SOCKET_URL=
-NEXT_PUBLIC_MAPS_PROVIDER=
-NEXT_PUBLIC_GOOGLE_MAPS_KEY=
-
-# API
-NODE_ENV=
-PORT=5000
-CLIENT_URL=
-DATABASE_URL=
-DIRECT_DATABASE_URL=
-JWT_ACCESS_SECRET=
-JWT_REFRESH_SECRET=
-GOOGLE_CLIENT_ID=
-STRIPE_SECRET_KEY=
-STRIPE_WEBHOOK_SECRET=
-RAZORPAY_KEY_ID=
-RAZORPAY_KEY_SECRET=
-MAPS_PROVIDER=
-GOOGLE_MAPS_SERVER_KEY=
-EMAIL_FROM=
-```
-
-Only variables explicitly prefixed for public use may be exposed to the browser. Server map keys, payment secrets, database URLs, and JWT secrets must never be public.
+Only variables explicitly prefixed for public use may be exposed to the
+browser. Payment secrets, database URLs, email-provider keys, OTP HMAC keys, and
+JWT secrets must never be public.
 
 ## 22. PostgreSQL Migration Plan
 

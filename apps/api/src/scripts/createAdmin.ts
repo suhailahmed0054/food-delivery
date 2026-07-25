@@ -1,3 +1,4 @@
+import "../config/mongoDns";
 import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
 import { env } from "../config/env";
@@ -13,7 +14,7 @@ async function createAdmin() {
     );
   }
 
-  await mongoose.connect(env.mongoUri);
+  await mongoose.connect(env.mongoUri, { dbName: env.mongoDatabaseName });
   const passwordHash = await bcrypt.hash(env.adminPassword, 12);
   const admin = await User.findOneAndUpdate(
     { email: env.adminEmail.toLowerCase() },

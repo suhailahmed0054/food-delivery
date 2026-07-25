@@ -51,7 +51,7 @@ export const defaultRestaurantSettings: RestaurantSettingsData = {
   taxRate: 0.05,
   minimumOrder: 299,
   cashEnabled: true,
-  onlinePaymentEnabled: true,
+  onlinePaymentEnabled: false,
   whatsappTemplate: defaultDeliveryWhatsAppTemplate
 };
 

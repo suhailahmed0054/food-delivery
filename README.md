@@ -5,9 +5,9 @@ A full-stack online food delivery application for a single restaurant, with sepa
 ## Tech Stack
 
 - Frontend: Next.js 15, React 19, TypeScript, Tailwind CSS, ShadCN-style UI components, React Query, Zustand persistent cart
-- Backend: Node.js, Express, TypeScript, MongoDB Atlas, JWT auth, refresh tokens, Google OAuth-ready routes
-- Payments: Razorpay test-mode order creation plus cash on delivery
-- Notifications: Nodemailer plus SMS/WhatsApp service placeholders
+- Backend: Node.js, Express, TypeScript, MongoDB Atlas, email-OTP customer auth, bcrypt admin auth, JWT access/refresh cookies
+- Payments: Cash on delivery checkout, with dormant Razorpay payment/refund infrastructure available for controlled re-enablement
+- Notifications: In-app notifications, Resend email, and optional Twilio order SMS
 - Real-time: Socket.io order status events
 - Security: Helmet, JWT role middleware, password hashing, API rate limiting, webhook signature verification
 
@@ -49,10 +49,11 @@ When `MONGODB_URI` is not set, the API also persists table QR tokens and orders 
 - Ten persistent table records with private QR tokens, pause/activate controls, and token rotation
 - Printable SVG QR codes in Admin → Table QR Codes; each opens `/menu?t=<private-token>`
 - API-backed live orders with dine-in table number, dine-in statuses, and five-second admin polling
-- Razorpay/COD selection and order confirmation flow
+- Cash-on-delivery order confirmation flow
 - Order tracking timeline, map placeholder, delivery ETA, rider contact and review area
 - Account feature surface for login, saved addresses, favorites, history and reorder workflows
 - Admin orders management, kitchen display, menu management, settings, analytics, customer management and notifications
+- Persistent menu photo uploads through Cloudinary
 - MongoDB schemas for users, menu items, orders, payments and reviews
 
 ## Run Locally
@@ -76,7 +77,8 @@ npm.cmd run dev:web
 npm.cmd run dev:api
 ```
 
-Copy `.env.example` files in each app before connecting MongoDB, Razorpay, email, SMS, and Google OAuth.
+Copy the `.env.example` files before connecting MongoDB, Resend, Cloudinary,
+optional Redis, optional Razorpay, or optional Twilio SMS.
 
 ## Table QR ordering
 
@@ -98,4 +100,10 @@ Run the complete local quality gate with a production-safe `NEXT_PUBLIC_API_URL`
 npm run verify
 ```
 
-Use [docs/LAUNCH_RUNBOOK.md](docs/LAUNCH_RUNBOOK.md) for managed service setup, staging validation, Razorpay events, automated uptime checks, backups, restore drills, release tagging, and rollback.
+Use [docs/ENVIRONMENT_VARIABLE_AUDIT.md](docs/ENVIRONMENT_VARIABLE_AUDIT.md)
+for the full usage/removal analysis,
+[docs/PRODUCTION_CONFIGURATION.md](docs/PRODUCTION_CONFIGURATION.md) for the
+minimal deployment values, and
+[docs/LAUNCH_RUNBOOK.md](docs/LAUNCH_RUNBOOK.md) for managed service setup,
+staging validation, Razorpay events, automated uptime checks, backups, restore
+drills, release tagging, and rollback.

@@ -1,7 +1,6 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { createHash, timingSafeEqual } from "crypto";
-import { OAuth2Client } from "google-auth-library";
 import { User } from "../models/User";
 import { env } from "../config/env";
 import {
@@ -10,8 +9,12 @@ import {
   verifyRefreshToken
 } from "../services/tokenService";
 import { asyncHandler } from "../middleware/asyncHandler";
-import { requireAuth } from "../middleware/auth";
-import { accountRateLimitKey, rateLimit } from "../middleware/rateLimit";
+import { requireAuth, requireCustomerAuth } from "../middleware/auth";
+import {
+  accountRateLimitKey,
+  emailRateLimitKey,
+  rateLimit
+} from "../middleware/rateLimit";
 import {
   adminRefreshCookieName,
   clearAdminAuthCookies,
@@ -25,26 +28,29 @@ import {
   createLocalAccount,
   findLocalAccountByEmail,
   findLocalAccountById,
-  updateLocalAccount,
-  upsertLocalGoogleAccount
+  updateLocalAccount
 } from "../services/localAccountStore";
+import {
+  EmailOtpCooldownError,
+  EmailOtpStorageUnavailableError,
+  issueEmailOtp,
+  verifyEmailOtp
+} from "../services/emailOtpService";
 import { z } from "zod";
 
 export const authRouter = Router();
-
-const registerSchema = z.object({
-  name: z.string().trim().min(1).max(100),
-  email: z.string().trim().email().transform((value) => value.toLowerCase()),
-  password: z.string().min(8).max(72)
-});
 
 const loginSchema = z.object({
   email: z.string().trim().email().transform((value) => value.toLowerCase()),
   password: z.string().min(1).max(72)
 });
 
-const googleSchema = z.object({
-  idToken: z.string().trim().min(1)
+const emailOtpRequestSchema = z.object({
+  email: z.string().trim().email().max(320).transform((value) => value.toLowerCase())
+});
+
+const emailOtpVerifySchema = emailOtpRequestSchema.extend({
+  otp: z.string().trim().regex(/^\d{6}$/)
 });
 
 function databaseUnavailable() {
@@ -86,6 +92,12 @@ function createAdminTokens(user: { id: string; role: "admin" }) {
   };
 }
 
+function isLoopbackAddress(address: string | undefined) {
+  return address === "127.0.0.1" ||
+    address === "::1" ||
+    address === "::ffff:127.0.0.1";
+}
+
 function createCustomerTokens(user: { id: string; role: "customer" }) {
   return {
     accessToken: signAccessToken(user),
@@ -93,138 +105,142 @@ function createCustomerTokens(user: { id: string; role: "customer" }) {
   };
 }
 
-authRouter.post("/register", rateLimit(5, 15 * 60_000, "register", accountRateLimitKey), asyncHandler(async (req, res) => {
-  const parsed = registerSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ message: "Invalid registration details", errors: parsed.error.flatten() });
-  }
-  const passwordHash = await bcrypt.hash(parsed.data.password, 10);
-  if (databaseUnavailable()) {
-    if (process.env.NODE_ENV === "production") {
-      return res.status(503).json({ message: "Account service is unavailable" });
+async function revokeRefreshSession(refreshToken: string | null) {
+  if (!refreshToken) return;
+
+  try {
+    const payload = verifyRefreshToken(refreshToken);
+    if (databaseUnavailable()) {
+      if (process.env.NODE_ENV !== "production" && payload.role === "customer") {
+        await updateLocalAccount(payload.sub, { refreshTokenHash: undefined });
+      }
+      return;
     }
-    const user = await createLocalAccount({
-      name: parsed.data.name,
-      email: parsed.data.email,
-      passwordHash
-    });
+    await User.findByIdAndUpdate(payload.sub, { $unset: { refreshTokenHash: 1 } });
+  } catch {
+    // Invalid or expired cookies are still cleared by the caller.
+  }
+}
+
+authRouter.post(
+  ["/send-otp", "/email/request-otp"],
+  rateLimit(5, 15 * 60_000, "customer-otp-request-ip"),
+  rateLimit(5, 15 * 60_000, "customer-otp-request-email", emailRateLimitKey),
+  asyncHandler(async (req, res) => {
+    const parsed = emailOtpRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Enter a valid email address." });
+    }
+
+    try {
+      const result = await issueEmailOtp({
+        email: parsed.data.email,
+        requestIp: req.ip ?? "unknown"
+      });
+      return res.json({
+        message: "If the address can receive email, a code has been sent.",
+        resendAfterSeconds: result.resendAfterSeconds
+      });
+    } catch (error) {
+      if (error instanceof EmailOtpCooldownError) {
+        res.setHeader("Retry-After", String(error.retryAfterSeconds));
+        return res.status(429).json({
+          message: "Please wait before requesting another code.",
+          retryAfterSeconds: error.retryAfterSeconds
+        });
+      }
+      const deliveryError = error instanceof Error
+        ? error.message
+        : "Unknown email delivery error";
+      console.error(`Customer OTP email delivery failed: ${deliveryError}`);
+      return res.status(503).json({
+        message: "We couldn't send the code. Please try again."
+      });
+    }
+  })
+);
+
+authRouter.post(
+  ["/verify-otp", "/email/verify-otp"],
+  rateLimit(20, 15 * 60_000, "customer-otp-verify-ip"),
+  rateLimit(20, 15 * 60_000, "customer-otp-verify-email", emailRateLimitKey),
+  asyncHandler(async (req, res) => {
+    const parsed = emailOtpVerifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "The code is incorrect or expired." });
+    }
+
+    let verification: Awaited<ReturnType<typeof verifyEmailOtp>>;
+    try {
+      verification = await verifyEmailOtp(parsed.data);
+    } catch (error) {
+      if (error instanceof EmailOtpStorageUnavailableError) {
+        return res.status(503).json({ message: "Verification is temporarily unavailable." });
+      }
+      throw error;
+    }
+    if (verification.status === "too_many_attempts") {
+      return res.status(429).json({ message: "Too many attempts. Request a new code." });
+    }
+    if (verification.status === "expired") {
+      return res.status(400).json({ message: "The code has expired. Request a new code." });
+    }
+    if (verification.status !== "verified") {
+      return res.status(400).json({ message: "The code is incorrect or expired." });
+    }
+
+    if (databaseUnavailable()) {
+      if (process.env.NODE_ENV === "production") {
+        return res.status(503).json({ message: "Account service is unavailable" });
+      }
+
+      let user = await findLocalAccountByEmail(verification.normalizedEmail);
+      if (!user) {
+        user = await createLocalAccount({
+          name: "Customer",
+          email: verification.normalizedEmail,
+          emailVerified: true
+        });
+      }
+      if (!user || user.role !== "customer" || user.isBlocked) {
+        return res.status(401).json({ message: "Account is unavailable" });
+      }
+
+      const tokens = createCustomerTokens({ id: user.id, role: "customer" });
+      await updateLocalAccount(user.id, {
+        emailVerified: true,
+        refreshTokenHash: hashToken(tokens.refreshToken)
+      });
+      setCustomerAuthCookies(res, tokens.accessToken, tokens.refreshToken);
+      return res.json({ user: publicUser(user) });
+    }
+
+    let user = await User.findOne({ email: verification.normalizedEmail });
     if (!user) {
-      return res.status(409).json({ message: "An account with this email already exists" });
+      try {
+        user = await User.create({
+          name: "Customer",
+          email: verification.normalizedEmail,
+          emailVerified: true,
+          role: "customer"
+        });
+      } catch (error) {
+        if ((error as { code?: number }).code !== 11000) throw error;
+        user = await User.findOne({ email: verification.normalizedEmail });
+      }
     }
-    const tokens = createCustomerTokens({ id: user.id, role: "customer" });
-    await updateLocalAccount(user.id, {
-      refreshTokenHash: hashToken(tokens.refreshToken)
-    });
-    setCustomerAuthCookies(res, tokens.accessToken, tokens.refreshToken);
-    return res.status(201).json({
-      user: publicUser(user)
-    });
-  }
-
-  const existingUser = await User.exists({ email: parsed.data.email });
-  if (existingUser) return res.status(409).json({ message: "An account with this email already exists" });
-
-  const user = await User.create({
-    name: parsed.data.name,
-    email: parsed.data.email,
-    passwordHash,
-    role: "customer"
-  });
-  const tokens = createCustomerTokens({ id: user.id, role: "customer" });
-  user.refreshTokenHash = hashToken(tokens.refreshToken);
-  await user.save();
-  setCustomerAuthCookies(res, tokens.accessToken, tokens.refreshToken);
-  return res.status(201).json({
-    user: publicUser(user)
-  });
-}));
-
-authRouter.post("/login", rateLimit(5, 15 * 60_000, "customer-login", accountRateLimitKey), asyncHandler(async (req, res) => {
-  const parsed = loginSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ message: "Enter a valid email and password" });
-  if (databaseUnavailable()) {
-    if (process.env.NODE_ENV === "production") {
-      return res.status(503).json({ message: "Account service is unavailable" });
-    }
-    const user = await findLocalAccountByEmail(parsed.data.email);
-    if (
-      !user?.passwordHash ||
-      user.role !== "customer" ||
-      user.isBlocked ||
-      !(await bcrypt.compare(parsed.data.password, user.passwordHash))
-    ) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-    const tokens = createCustomerTokens({ id: user.id, role: "customer" });
-    await updateLocalAccount(user.id, {
-      refreshTokenHash: hashToken(tokens.refreshToken)
-    });
-    setCustomerAuthCookies(res, tokens.accessToken, tokens.refreshToken);
-    return res.json({
-      user: publicUser(user)
-    });
-  }
-
-  const user = await User.findOne({ email: parsed.data.email });
-  if (!user?.passwordHash || user.role !== "customer" || user.isBlocked) {
-    return res.status(401).json({ message: "Invalid credentials" });
-  }
-  const matches = await bcrypt.compare(parsed.data.password, user.passwordHash);
-  if (!matches) return res.status(401).json({ message: "Invalid credentials" });
-  const tokens = createCustomerTokens({ id: user.id, role: "customer" });
-  user.refreshTokenHash = hashToken(tokens.refreshToken);
-  await user.save();
-  setCustomerAuthCookies(res, tokens.accessToken, tokens.refreshToken);
-  return res.json({
-    user: publicUser(user)
-  });
-}));
-
-authRouter.post("/google", rateLimit(10, 15 * 60_000, "google-login"), asyncHandler(async (req, res) => {
-  const parsed = googleSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ message: "Google ID token is required" });
-  if (!env.googleClientId) return res.status(503).json({ message: "Google sign-in is not configured" });
-  const client = new OAuth2Client(env.googleClientId);
-  const ticket = await client.verifyIdToken({ idToken: parsed.data.idToken, audience: env.googleClientId });
-  const payload = ticket.getPayload();
-  if (!payload?.email || payload.email_verified !== true) {
-    return res.status(401).json({ message: "A verified Google account email is required" });
-  }
-
-  if (databaseUnavailable()) {
-    if (process.env.NODE_ENV === "production") {
-      return res.status(503).json({ message: "Account service is unavailable" });
-    }
-    const user = await upsertLocalGoogleAccount({
-      name: payload.name ?? "Google User",
-      email: payload.email,
-      googleId: payload.sub
-    });
-    if (!user || user.isBlocked) {
+    if (!user || user.role !== "customer" || user.isBlocked) {
       return res.status(401).json({ message: "Account is unavailable" });
     }
+
     const tokens = createCustomerTokens({ id: user.id, role: "customer" });
-    await updateLocalAccount(user.id, {
-      refreshTokenHash: hashToken(tokens.refreshToken)
-    });
+    user.emailVerified = true;
+    user.refreshTokenHash = hashToken(tokens.refreshToken);
+    await user.save();
     setCustomerAuthCookies(res, tokens.accessToken, tokens.refreshToken);
     return res.json({ user: publicUser(user) });
-  }
-
-  const user = await User.findOneAndUpdate(
-    { email: payload.email },
-    { name: payload.name ?? "Google User", email: payload.email, googleId: payload.sub },
-    { new: true, upsert: true, setDefaultsOnInsert: true }
-  );
-  if (user.role !== "customer" || user.isBlocked) {
-    return res.status(401).json({ message: "Account is unavailable" });
-  }
-  const tokens = createCustomerTokens({ id: user.id, role: "customer" });
-  user.refreshTokenHash = hashToken(tokens.refreshToken);
-  await user.save();
-  setCustomerAuthCookies(res, tokens.accessToken, tokens.refreshToken);
-  return res.json({ user: publicUser(user) });
-}));
+  })
+);
 
 authRouter.post(
   "/admin/login",
@@ -238,6 +254,11 @@ authRouter.post(
     if (databaseUnavailable()) {
       if (process.env.NODE_ENV === "production") {
         return res.status(503).json({ message: "Admin account service is unavailable" });
+      }
+      if (env.usesDemoAdminCredentials && !isLoopbackAddress(req.ip)) {
+        return res.status(403).json({
+          message: "Local demo admin access is only available from this computer"
+        });
       }
 
       const validEmail = safeTextMatch(
@@ -260,7 +281,8 @@ authRouter.post(
       return res.json({ user });
     }
 
-    const user = await User.findOne({ email: parsed.data.email });
+    const user = await User.findOne({ email: parsed.data.email })
+      .select("+passwordHash");
     if (
       !user?.passwordHash ||
       user.role !== "admin" ||
@@ -278,10 +300,7 @@ authRouter.post(
   })
 );
 
-authRouter.get(
-  "/me",
-  requireAuth,
-  asyncHandler(async (req, res) => {
+const sendCurrentUser = asyncHandler(async (req, res) => {
     if (!req.user) return res.status(401).json({ message: "Not authenticated" });
 
     if (databaseUnavailable() && req.user.id === "local-admin") {
@@ -307,8 +326,10 @@ authRouter.get(
       return res.status(401).json({ message: "Account is unavailable" });
     }
     return res.json({ user: publicUser({ ...user, id: String(user._id) }) });
-  })
-);
+  });
+
+authRouter.get("/session", requireCustomerAuth, sendCurrentUser);
+authRouter.get("/me", requireAuth, sendCurrentUser);
 
 authRouter.post(
   "/refresh",
@@ -410,20 +431,7 @@ authRouter.post(
   "/customer/logout",
   asyncHandler(async (req, res) => {
     const refreshToken = readCookie(req, customerRefreshCookieName);
-    if (refreshToken) {
-      try {
-        const payload = verifyRefreshToken(refreshToken);
-        if (databaseUnavailable()) {
-          await updateLocalAccount(payload.sub, { refreshTokenHash: undefined });
-        } else {
-          await User.findByIdAndUpdate(payload.sub, {
-            $unset: { refreshTokenHash: 1 }
-          });
-        }
-      } catch {
-        // Invalid or expired cookies are still cleared.
-      }
-    }
+    await revokeRefreshSession(refreshToken);
     clearCustomerAuthCookies(res);
     return res.status(204).send();
   })
@@ -432,15 +440,11 @@ authRouter.post(
 authRouter.post(
   "/logout",
   asyncHandler(async (req, res) => {
-    const refreshToken = readCookie(req, adminRefreshCookieName);
-    if (refreshToken && !databaseUnavailable()) {
-      try {
-        const payload = verifyRefreshToken(refreshToken);
-        await User.findByIdAndUpdate(payload.sub, { $unset: { refreshTokenHash: 1 } });
-      } catch {
-        // Invalid or expired cookies are still cleared.
-      }
-    }
+    await Promise.all([
+      revokeRefreshSession(readCookie(req, customerRefreshCookieName)),
+      revokeRefreshSession(readCookie(req, adminRefreshCookieName))
+    ]);
+    clearCustomerAuthCookies(res);
     clearAdminAuthCookies(res);
     return res.status(204).send();
   })

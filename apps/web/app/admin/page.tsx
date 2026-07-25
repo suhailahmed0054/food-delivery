@@ -14,6 +14,7 @@ import {
   fetchCustomer,
   fetchCustomers,
   fetchAdminIssues,
+  fetchAdminReviews,
   fetchReportSummary,
   fetchRestaurantSettings,
   createDeliveryPerson,
@@ -33,9 +34,11 @@ import {
   updateOrderStatus as updateOrderStatusApi,
   updateRestaurantSettings,
   updateMenuItem,
+  uploadMenuImage,
   setCustomerBlocked,
   assignIssueAgent,
   decideIssueResolution,
+  type AdminReviewPage,
   type AdminCustomer,
   type AdminCustomerDetail,
   type ApiOrder,
@@ -88,7 +91,9 @@ import {
   UserX,
   ReceiptText,
   Volume2,
-  VolumeX
+  VolumeX,
+  UploadCloud,
+  Menu
 } from "lucide-react";
 
 const FALLBACK_MENU_IMAGE =
@@ -224,6 +229,7 @@ type AdminOrder = {
   tableNumber?: unknown;
   table?: unknown;
   status: string;
+  cancelledBy?: "customer" | "admin";
   items?: AdminOrderItem[] | string;
   deliveryAgent?: {
     staffId?: string;
@@ -275,6 +281,7 @@ function normalizeApiOrder(order: ApiOrder): AdminOrder {
     orderType: order.orderType,
     tableNumber: order.tableNumber,
     status: formatOrderStatus(order.status),
+    cancelledBy: order.cancelledBy,
     items: order.items.map((item) => ({
       name: item.name,
       quantity: item.quantity,
@@ -421,8 +428,8 @@ function OrderTypeBadge({ dineIn }: { dineIn: boolean }) {
 
 function getOrderProcessStatuses(order: AdminOrder) {
   return isDineInOrder(order)
-    ? ["Pending", "Preparing", "Ready", "Served"]
-    : ["Placed", "Preparing", "Out for Delivery", "Delivered"];
+    ? ["Pending", "Accepted", "Preparing", "Ready", "Delivered"]
+    : ["Placed", "Accepted", "Preparing", "Ready", "Out for Delivery", "Delivered"];
 }
 
 function getOrderItemsSummary(order: AdminOrder) {
@@ -450,21 +457,22 @@ function getOrderText(value: unknown, fallback: string) {
 }
 
 function getAdminNextOrderStatuses(order: AdminOrder) {
-  const status = order.status.trim().toLowerCase();
+  const status = toApiOrderStatus(order.status);
   const transitions = isDineInOrder(order)
     ? {
-        pending: ["Preparing", "Cancelled"],
-        placed: ["Preparing", "Cancelled"],
+        pending: ["Accepted", "Cancelled"],
+        placed: ["Accepted", "Cancelled"],
         accepted: ["Preparing", "Cancelled"],
         preparing: ["Ready", "Cancelled"],
-        ready: ["Served"],
-        ready_for_pickup: ["Served"],
+        ready: ["Delivered"],
+        ready_for_pickup: ["Delivered"],
         served: [],
+        delivered: [],
         cancelled: []
       }
     : {
-        pending: ["Placed", "Preparing", "Cancelled"],
-        placed: ["Preparing", "Cancelled"],
+        pending: ["Accepted", "Cancelled"],
+        placed: ["Accepted", "Cancelled"],
         accepted: ["Preparing", "Cancelled"],
         preparing: ["Ready", "Cancelled"],
         ready: ["Out for Delivery", "Cancelled"],
@@ -646,7 +654,11 @@ function normalizeWhatsAppPhone(phone: string) {
 export default function AdminDashboard() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileNavigationRef = useRef<HTMLElement>(null);
   const [activeTab, setActiveTab] = useState("Dashboard");
+  const [isMobileNavigationOpen, setIsMobileNavigationOpen] =
+    useState(false);
   const [authStatus, setAuthStatus] = useState<
     "checking" | "authenticated" | "unauthorized"
   >("checking");
@@ -661,11 +673,16 @@ export default function AdminDashboard() {
   const [menuData, setMenuData] = useState<MenuItem[]>([]);
   const [orders, setOrders] = useState<AdminOrder[]>([]);
   const [ordersError, setOrdersError] = useState("");
+  const [ordersNotice, setOrdersNotice] = useState("");
+  const [isOrdersRefreshing, setIsOrdersRefreshing] = useState(false);
   const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
+  const [updatingOrderStatus, setUpdatingOrderStatus] = useState<string | null>(null);
   const [orderAlertsEnabled, setOrderAlertsEnabled] = useState(false);
   const [orderAlertMessage, setOrderAlertMessage] = useState("");
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
+  const knownOrderStatusesRef = useRef<Map<string, string>>(new Map());
   const hasLoadedOrdersRef = useRef(false);
+  const ordersRefreshRequestRef = useRef(0);
   const orderAlertsEnabledRef = useRef(false);
   const orderAlertPlayerRef = useRef<OrderAlertPlayer>({
     audio: null,
@@ -733,6 +750,13 @@ export default function AdminDashboard() {
   const [supportPage, setSupportPage] = useState(1);
   const [supportError, setSupportError] = useState("");
   const [supportActionId, setSupportActionId] = useState<string | null>(null);
+  const [reviewData, setReviewData] = useState<AdminReviewPage | null>(null);
+  const [reviewSearch, setReviewSearch] = useState("");
+  const [reviewSearchInput, setReviewSearchInput] = useState("");
+  const [reviewRating, setReviewRating] = useState(0);
+  const [reviewPage, setReviewPage] = useState(1);
+  const [reviewError, setReviewError] = useState("");
+  const [isReviewLoading, setIsReviewLoading] = useState(false);
 
   // Modal State
   const [isMenuModalOpen, setIsMenuModalOpen] = useState(false);
@@ -740,6 +764,8 @@ export default function AdminDashboard() {
 
   // Form State (Updated with Standard Price)
   const [formData, setFormData] = useState<MenuFormData>(() => createEmptyMenuFormData());
+  const [isUploadingMenuImage, setIsUploadingMenuImage] = useState(false);
+  const [menuImageError, setMenuImageError] = useState("");
 
   const refreshMenu = async () => {
     setIsMenuLoading(true);
@@ -755,40 +781,73 @@ export default function AdminDashboard() {
     }
   };
 
-  const refreshOrders = async () => {
+  const refreshOrders = async (showLoading = false) => {
+    const requestId = ++ordersRefreshRequestRef.current;
+    if (showLoading) setIsOrdersRefreshing(true);
     setOrdersError("");
     try {
       const apiOrders = await fetchOrders();
+      if (requestId !== ordersRefreshRequestRef.current) return;
       const nextOrders = apiOrders.map(normalizeApiOrder);
 
       const newOrderCount = hasLoadedOrdersRef.current
         ? nextOrders.filter((order) => !knownOrderIdsRef.current.has(order.id)).length
         : 0;
+      const customerCancelledOrders = hasLoadedOrdersRef.current
+        ? nextOrders.filter((order) => {
+            const previousStatus = knownOrderStatusesRef.current.get(order.id);
+            return (
+              order.status === "Cancelled" &&
+              order.cancelledBy === "customer" &&
+              previousStatus !== undefined &&
+              previousStatus !== "Cancelled"
+            );
+          })
+        : [];
 
-      nextOrders.forEach((order) => knownOrderIdsRef.current.add(order.id));
+      nextOrders.forEach((order) => {
+        knownOrderIdsRef.current.add(order.id);
+        knownOrderStatusesRef.current.set(order.id, order.status);
+      });
       hasLoadedOrdersRef.current = true;
       setOrders(nextOrders);
 
-      if (newOrderCount > 0 && orderAlertsEnabledRef.current) {
+      const alertMessages: string[] = [];
+      if (newOrderCount > 0) {
+        alertMessages.push(
+          `${newOrderCount} new order${newOrderCount === 1 ? "" : "s"} received`
+        );
+      }
+      if (customerCancelledOrders.length > 0) {
+        alertMessages.push(
+          customerCancelledOrders.length === 1
+            ? `${customerCancelledOrders[0].orderNumber ?? customerCancelledOrders[0].id} cancelled by customer`
+            : `${customerCancelledOrders.length} orders cancelled by customers`
+        );
+      }
+
+      if (alertMessages.length > 0 && orderAlertsEnabledRef.current) {
         void playOrderAlertSound(orderAlertPlayerRef.current)
           .then(() => {
-            setOrderAlertMessage(
-              `${newOrderCount} new order${newOrderCount === 1 ? "" : "s"} received`
-            );
+            setOrderAlertMessage(alertMessages.join(" • "));
           })
           .catch((error) => {
-            console.warn("Unable to play the new-order alert", error);
+            console.warn("Unable to play the order alert", error);
             setOrderAlertMessage(
               "Sound was blocked. Click the order sound button to enable it again."
             );
           });
       }
     } catch (error) {
+      if (requestId !== ordersRefreshRequestRef.current) return;
+      console.error("Unable to refresh admin orders", error);
       setOrdersError(
         error instanceof Error
           ? error.message
           : "Unable to load live orders. The last verified list is still shown."
       );
+    } finally {
+      if (showLoading) setIsOrdersRefreshing(false);
     }
   };
 
@@ -799,16 +858,16 @@ export default function AdminDashboard() {
     window.localStorage.setItem(ORDER_ALERTS_STORAGE_KEY, String(nextEnabled));
 
     if (!nextEnabled) {
-      setOrderAlertMessage("New-order sound is off");
+      setOrderAlertMessage("Order alert sound is off");
       stopOrderAlertSound(orderAlertPlayerRef.current);
       return;
     }
 
     try {
       await playOrderAlertSound(orderAlertPlayerRef.current);
-      setOrderAlertMessage("New-order sound is on");
+      setOrderAlertMessage("Order alert sound is on");
     } catch (error) {
-      console.warn("Unable to enable the new-order alert", error);
+      console.warn("Unable to enable the order alert", error);
       orderAlertsEnabledRef.current = false;
       setOrderAlertsEnabled(false);
       window.localStorage.setItem(ORDER_ALERTS_STORAGE_KEY, "false");
@@ -900,6 +959,50 @@ export default function AdminDashboard() {
       cancelled = true;
     };
   }, [router]);
+
+  useEffect(() => {
+    if (!isMobileNavigationOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusFrame = window.requestAnimationFrame(() => {
+      mobileNavigationRef.current
+        ?.querySelector<HTMLElement>("button")
+        ?.focus();
+    });
+
+    const handleNavigationKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsMobileNavigationOpen(false);
+        mobileMenuButtonRef.current?.focus();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const focusable = Array.from(
+        mobileNavigationRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+        ) ?? []
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleNavigationKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleNavigationKeyDown);
+    };
+  }, [isMobileNavigationOpen]);
 
   useEffect(() => {
     const player = orderAlertPlayerRef.current;
@@ -1013,8 +1116,11 @@ export default function AdminDashboard() {
   const updateOrderStatus = async (orderId: string, newStatus: string) => {
     const matchingOrder = orders.find((order) => order.id === orderId);
     const apiOrderId = matchingOrder?._id || matchingOrder?.orderNumber || orderId;
+    ordersRefreshRequestRef.current += 1;
     setOrdersError("");
+    setOrdersNotice("");
     setUpdatingOrderId(orderId);
+    setUpdatingOrderStatus(newStatus);
     try {
       const apiUpdatedOrder = await updateOrderStatusApi(
         apiOrderId,
@@ -1024,11 +1130,24 @@ export default function AdminDashboard() {
       setOrders((current) => current.map((order) =>
         order.id === orderId ? normalizedUpdatedOrder : order
       ));
+      knownOrderStatusesRef.current.set(
+        normalizedUpdatedOrder.id,
+        normalizedUpdatedOrder.status
+      );
+      setOrdersNotice(
+        `${normalizedUpdatedOrder.orderNumber ?? normalizedUpdatedOrder.id} is now ${normalizedUpdatedOrder.status}.`
+      );
+      void refreshOrders();
       void refreshDashboard();
       if (["Delivered", "Cancelled"].includes(normalizedUpdatedOrder.status)) {
         void refreshDeliveryPeople();
       }
     } catch (error) {
+      console.error("Unable to update admin order status", {
+        orderId: apiOrderId,
+        requestedStatus: toApiOrderStatus(newStatus),
+        error
+      });
       setOrdersError(
         error instanceof Error
           ? error.message
@@ -1036,6 +1155,7 @@ export default function AdminDashboard() {
       );
     } finally {
       setUpdatingOrderId(null);
+      setUpdatingOrderStatus(null);
     }
   };
 
@@ -1057,6 +1177,31 @@ export default function AdminDashboard() {
     if (authStatus !== "authenticated" || activeTab !== "Support") return;
     void refreshSupport();
   }, [activeTab, authStatus, refreshSupport]);
+
+  const refreshReviews = useCallback(async () => {
+    setIsReviewLoading(true);
+    setReviewError("");
+    try {
+      setReviewData(await fetchAdminReviews({
+        page: reviewPage,
+        limit: 12,
+        rating: reviewRating || undefined,
+        search: reviewSearch
+      }));
+    } catch (error) {
+      console.error("Unable to load admin reviews", error);
+      setReviewError(
+        error instanceof Error ? error.message : "Unable to load customer reviews"
+      );
+    } finally {
+      setIsReviewLoading(false);
+    }
+  }, [reviewPage, reviewRating, reviewSearch]);
+
+  useEffect(() => {
+    if (authStatus !== "authenticated" || activeTab !== "Reviews") return;
+    void refreshReviews();
+  }, [activeTab, authStatus, refreshReviews]);
 
   const refreshDashboard = async () => {
     const today = new Date().toISOString().slice(0, 10);
@@ -1205,6 +1350,9 @@ export default function AdminDashboard() {
           item.id === person.id ? { ...item, status: "busy" } : item
         )
       );
+      setOrdersNotice(
+        `${person.name} was assigned to ${assignedOrder.orderNumber ?? assignedOrder.id}.`
+      );
       void refreshDeliveryPeople();
       setAssignmentOrderId(null);
 
@@ -1215,6 +1363,11 @@ export default function AdminDashboard() {
       }
     } catch (error) {
       whatsappWindow?.close();
+      console.error("Unable to assign delivery person", {
+        orderId: order._id || order.orderNumber || order.id,
+        deliveryPersonId,
+        error
+      });
       setAssignmentError(error instanceof Error ? error.message : "Unable to assign delivery");
     } finally {
       setAssigningOrderId(null);
@@ -1334,6 +1487,40 @@ export default function AdminDashboard() {
     }
   };
 
+  const handleMenuImageUpload = async (file?: File) => {
+    if (!file) return;
+
+    setMenuImageError("");
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+    if (!allowedTypes.includes(file.type)) {
+      setMenuImageError("Upload a JPG, PNG, or WEBP dish photo.");
+      return;
+    }
+    if (file.size > 3 * 1024 * 1024) {
+      setMenuImageError("Dish photo must be under 3MB.");
+      return;
+    }
+
+    setIsUploadingMenuImage(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === "string") resolve(reader.result);
+          else reject(new Error("Unable to read dish photo"));
+        };
+        reader.onerror = () => reject(new Error("Unable to read dish photo"));
+        reader.readAsDataURL(file);
+      });
+      const uploaded = await uploadMenuImage(file.name, dataUrl);
+      setFormData((current) => ({ ...current, image: uploaded.imageUrl }));
+    } catch (error) {
+      setMenuImageError(error instanceof Error ? error.message : "Unable to upload dish photo");
+    } finally {
+      setIsUploadingMenuImage(false);
+    }
+  };
+
   // Menu Logic
   const handleSaveMenu = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1385,6 +1572,8 @@ export default function AdminDashboard() {
   };
 
   const openMenuModal = (item?: MenuItem) => {
+    setMenuImageError("");
+    setIsUploadingMenuImage(false);
     if (item) {
       setEditingItem(item);
       const itemSizes = getEditableSizeNames(item);
@@ -1743,6 +1932,7 @@ export default function AdminDashboard() {
     switch (status) {
       case "Pending": return "bg-blue-500/20 text-blue-400 border-blue-500/30";
       case "Placed": return "bg-blue-500/20 text-blue-400 border-blue-500/30";
+      case "Accepted": return "bg-blue-500/20 text-blue-400 border-blue-500/30";
       case "Preparing": return "bg-primary/20 text-primary border-primary/30";
       case "Ready": return "bg-emerald-500/20 text-emerald-400 border-emerald-500/30";
       case "Served": return "bg-green-500/20 text-green-400 border-green-500/30";
@@ -1807,6 +1997,7 @@ export default function AdminDashboard() {
     { name: "Table QR Codes", icon: QrCode },
     { name: "Delivery Staff", icon: Bike },
     { name: "Customers", icon: UserCircle },
+    { name: "Reviews", icon: Star },
     { name: "Support", icon: MessageCircle },
     { name: "Reports", icon: BarChart3 },
     { name: "Settings", icon: Settings },
@@ -1894,8 +2085,8 @@ export default function AdminDashboard() {
                   aria-pressed={orderAlertsEnabled}
                   title={
                     orderAlertsEnabled
-                      ? "Turn off new-order sound"
-                      : "Turn on iPhone-style new-order sound and play a test chime"
+                      ? "Turn off order alert sound"
+                      : "Turn on order alert sound and play a test chime"
                   }
                   className={`inline-flex min-h-10 items-center gap-2 rounded-xl border px-3 py-2 text-xs font-black transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
                     orderAlertsEnabled
@@ -1908,11 +2099,12 @@ export default function AdminDashboard() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => void refreshOrders()}
-                  className="inline-flex min-h-10 items-center gap-2 rounded-xl px-3 py-2 text-sm font-bold text-primary transition hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                  onClick={() => void refreshOrders(true)}
+                  disabled={isOrdersRefreshing}
+                  className="inline-flex min-h-10 items-center gap-2 rounded-xl px-3 py-2 text-sm font-bold text-primary transition hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60"
                 >
-                  <RefreshCw size={15} />
-                  Refresh
+                  <RefreshCw size={15} className={isOrdersRefreshing ? "animate-spin" : ""} />
+                  {isOrdersRefreshing ? "Refreshing..." : "Refresh"}
                 </button>
                 <span className="sr-only" role="status" aria-live="polite">
                   {orderAlertMessage}
@@ -1935,6 +2127,11 @@ export default function AdminDashboard() {
             {ordersError && (
               <p role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm font-bold text-red-400">
                 {ordersError}
+              </p>
+            )}
+            {ordersNotice && !ordersError && (
+              <p role="status" className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-bold text-emerald-400">
+                {ordersNotice}
               </p>
             )}
 
@@ -2111,7 +2308,9 @@ export default function AdminDashboard() {
                                 : "text-muted-foreground hover:bg-foreground/10"
                             }`}
                           >
-                            {status}
+                            {updatingOrderId === order.id && updatingOrderStatus === status
+                              ? "Updating..."
+                              : status}
                           </button>
                           );
                         })}
@@ -2139,7 +2338,11 @@ export default function AdminDashboard() {
                         }`}
                       >
                         <XCircle size={14} />
-                        {isCancelled ? "Cancelled" : "Cancel Order"}
+                        {updatingOrderId === order.id && updatingOrderStatus === "Cancelled"
+                          ? "Cancelling..."
+                          : isCancelled
+                            ? "Cancelled"
+                            : "Cancel Order"}
                       </button>
                     </div>
                   </div>
@@ -2672,6 +2875,191 @@ export default function AdminDashboard() {
                   <Plus size={16} />
                   Add delivery person
                 </button>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      case "Reviews": {
+        return (
+          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="flex flex-col gap-4 border-b border-border pb-5 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <h3 className="font-heading text-2xl font-semibold text-foreground">
+                  Verified customer reviews
+                </h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Read individual ratings and comments submitted after completed orders.
+                </p>
+              </div>
+
+              <form
+                className="flex flex-col gap-2 sm:flex-row"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  setReviewPage(1);
+                  setReviewSearch(reviewSearchInput.trim());
+                }}
+              >
+                <label className="relative">
+                  <span className="sr-only">Search reviews</span>
+                  <Search
+                    size={16}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                  />
+                  <input
+                    type="search"
+                    value={reviewSearchInput}
+                    onChange={(event) => setReviewSearchInput(event.target.value)}
+                    className="h-11 w-full rounded-xl border border-border bg-card pl-9 pr-3 text-sm outline-none focus:border-primary sm:w-64"
+                    placeholder="Customer, order, dish, comment"
+                  />
+                </label>
+                <select
+                  value={reviewRating}
+                  onChange={(event) => {
+                    setReviewRating(Number(event.target.value));
+                    setReviewPage(1);
+                  }}
+                  aria-label="Filter reviews by rating"
+                  className="h-11 rounded-xl border border-border bg-card px-3 text-sm outline-none focus:border-primary"
+                >
+                  <option value={0}>All ratings</option>
+                  {[5, 4, 3, 2, 1].map((rating) => (
+                    <option key={rating} value={rating}>
+                      {rating} star{rating === 1 ? "" : "s"}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="submit"
+                  disabled={isReviewLoading}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-black text-primary-foreground disabled:cursor-wait disabled:opacity-60"
+                >
+                  {isReviewLoading ? (
+                    <RefreshCw size={15} className="animate-spin" />
+                  ) : (
+                    <Search size={15} />
+                  )}
+                  {isReviewLoading ? "Loading..." : "Search"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void refreshReviews()}
+                  disabled={isReviewLoading}
+                  aria-label="Refresh customer reviews"
+                  title="Refresh customer reviews"
+                  className="inline-flex h-11 items-center justify-center rounded-xl border border-border px-3 text-primary transition hover:border-primary/40 hover:bg-primary/10 disabled:cursor-wait disabled:opacity-60"
+                >
+                  <RefreshCw size={16} className={isReviewLoading ? "animate-spin" : ""} />
+                </button>
+              </form>
+            </div>
+
+            {reviewError && (
+              <p
+                role="alert"
+                className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm font-bold text-red-400"
+              >
+                {reviewError}
+              </p>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm font-semibold text-muted-foreground">
+                {reviewData
+                  ? `${reviewData.pagination.total} verified review${reviewData.pagination.total === 1 ? "" : "s"}`
+                  : "Loading verified reviews..."}
+              </p>
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              {reviewData?.reviews.map((review) => (
+                <article
+                  key={review.id}
+                  className="rounded-2xl border border-border bg-card p-5 shadow-sm"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h4 className="truncate text-base font-black text-foreground">
+                        {review.customerName}
+                      </h4>
+                      <p className="mt-1 text-xs font-semibold text-muted-foreground">
+                        {formatAdminDate(review.createdAt)}
+                      </p>
+                    </div>
+                    <div
+                      className="flex items-center gap-1 text-primary"
+                      aria-label={`${review.rating} out of 5 stars`}
+                    >
+                      {[1, 2, 3, 4, 5].map((star) => (
+                        <Star
+                          key={star}
+                          size={16}
+                          className={star <= review.rating ? "fill-current" : "opacity-25"}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2 text-xs font-bold">
+                    <span className="rounded-lg border border-primary/25 bg-primary/10 px-2.5 py-1.5 text-primary">
+                      {review.menuItemName}
+                    </span>
+                    <span className="rounded-lg border border-border px-2.5 py-1.5 text-muted-foreground">
+                      {review.orderNumber || "Order unavailable"}
+                    </span>
+                  </div>
+
+                  <blockquote className="mt-4 whitespace-pre-wrap break-words rounded-xl border border-border bg-background/60 px-4 py-3 text-sm leading-6 text-foreground">
+                    {review.comment || "No written comment."}
+                  </blockquote>
+                </article>
+              ))}
+            </div>
+
+            {isReviewLoading && !reviewData && (
+              <div
+                role="status"
+                className="rounded-2xl border border-border bg-card p-12 text-center text-sm font-semibold text-muted-foreground"
+              >
+                Loading customer reviews...
+              </div>
+            )}
+
+            {reviewData && reviewData.reviews.length === 0 && !isReviewLoading && (
+              <div className="rounded-2xl border border-dashed border-border p-12 text-center text-sm font-semibold text-muted-foreground">
+                No customer reviews match these filters.
+              </div>
+            )}
+
+            {reviewData && reviewData.pagination.pages > 1 && (
+              <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-muted-foreground">
+                  Page {reviewData.pagination.page} of {reviewData.pagination.pages} ·{" "}
+                  {reviewData.pagination.total} reviews
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={reviewPage <= 1 || isReviewLoading}
+                    onClick={() => setReviewPage((page) => page - 1)}
+                    className="h-10 rounded-xl border border-border px-4 text-sm font-bold disabled:opacity-40"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      reviewPage >= reviewData.pagination.pages || isReviewLoading
+                    }
+                    onClick={() => setReviewPage((page) => page + 1)}
+                    className="h-10 rounded-xl border border-border px-4 text-sm font-bold disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -3411,11 +3799,6 @@ export default function AdminDashboard() {
                           label: "Cash payment",
                           detail: "Allow cash on delivery or at table",
                           key: "cashEnabled" as const
-                        },
-                        {
-                          label: "Online payment",
-                          detail: "Allow Razorpay checkout",
-                          key: "onlinePaymentEnabled" as const
                         }
                       ].map((option) => (
                         <label
@@ -3733,6 +4116,112 @@ export default function AdminDashboard() {
 
   return (
     <div className="min-h-screen bg-background flex font-body text-foreground selection:bg-primary/30">
+      {isMobileNavigationOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <button
+            type="button"
+            aria-label="Close admin navigation"
+            className="absolute inset-0 bg-black/65 backdrop-blur-sm"
+            onClick={() => {
+              setIsMobileNavigationOpen(false);
+              mobileMenuButtonRef.current?.focus();
+            }}
+          />
+          <aside
+            ref={mobileNavigationRef}
+            id="admin-mobile-navigation"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Admin navigation"
+            className="relative flex h-[100dvh] w-[min(20rem,calc(100vw-2rem))] flex-col overflow-y-auto border-r border-border bg-card shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-border/50 p-5">
+              <div className="flex min-w-0 items-center gap-3">
+                <Image
+                  src="/images/logo-watermark.png"
+                  alt="Al-Arab"
+                  width={52}
+                  height={52}
+                  className="h-11 w-auto shrink-0 object-contain drop-shadow-md"
+                />
+                <h1 className="font-logo text-xs font-bold leading-tight tracking-[0.18em] text-primary">
+                  AL-ARAB
+                  <br />
+                  <span className="text-[8px] tracking-widest text-muted-foreground">
+                    RESTAURANT
+                  </span>
+                </h1>
+              </div>
+              <button
+                type="button"
+                aria-label="Close admin navigation"
+                onClick={() => {
+                  setIsMobileNavigationOpen(false);
+                  mobileMenuButtonRef.current?.focus();
+                }}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border text-muted-foreground transition hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <nav aria-label="Admin sections" className="flex-1 space-y-1.5 p-4">
+              {sidebarLinks.map((link) => {
+                const isActive = activeTab === link.name;
+                return (
+                  <button
+                    key={link.name}
+                    type="button"
+                    onClick={() => {
+                      setActiveTab(link.name);
+                      setIsMobileNavigationOpen(false);
+                      mobileMenuButtonRef.current?.focus();
+                    }}
+                    aria-current={isActive ? "page" : undefined}
+                    className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition-all duration-200 active:scale-[0.98] ${
+                      isActive
+                        ? "bg-primary/10 font-bold text-primary shadow-[inset_4px_0_0_0_var(--theme-primary)]"
+                        : "font-medium text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                    }`}
+                    style={
+                      isActive
+                        ? ({
+                            "--theme-primary": "hsl(var(--primary))"
+                          } as React.CSSProperties)
+                        : {}
+                    }
+                  >
+                    <link.icon
+                      size={18}
+                      strokeWidth={isActive ? 2.5 : 2}
+                    />
+                    <span className="text-sm">{link.name}</span>
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="border-t border-border p-4">
+              <div className="mb-3 min-w-0 px-2">
+                <p className="truncate text-sm font-bold text-foreground">
+                  {adminUser?.name || "Administrator"}
+                </p>
+                <p className="truncate text-xs font-medium text-muted-foreground">
+                  {adminUser?.email || "Admin"}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleAdminLogout()}
+                className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-border bg-background text-sm font-bold text-muted-foreground transition hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-400"
+              >
+                <LogOut size={17} />
+                Sign out
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
 
       <aside className="hidden md:flex flex-col w-64 border-r border-border bg-card/50 backdrop-blur-xl sticky top-0 h-screen overflow-y-auto">
         <div className="p-6 pb-2 border-b border-border/50">
@@ -3764,9 +4253,24 @@ export default function AdminDashboard() {
       </aside>
 
       <main className="flex-1 flex flex-col h-screen overflow-y-auto relative">
-        <header className="sticky top-0 z-10 bg-background/80 backdrop-blur-md border-b border-border p-6 flex items-center justify-between">
-          <h2 className="font-heading text-3xl font-medium tracking-tight text-foreground">{activeTab}</h2>
-          <div className="flex items-center gap-5">
+        <header className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-border bg-background/80 p-3 backdrop-blur-md sm:p-4 md:p-6">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <button
+              ref={mobileMenuButtonRef}
+              type="button"
+              aria-label="Open admin navigation"
+              aria-controls="admin-mobile-navigation"
+              aria-expanded={isMobileNavigationOpen}
+              onClick={() => setIsMobileNavigationOpen(true)}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground transition hover:border-primary/40 hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 md:hidden"
+            >
+              <Menu size={20} />
+            </button>
+            <h2 className="min-w-0 truncate font-heading text-xl font-medium tracking-tight text-foreground sm:text-2xl md:text-3xl">
+              {activeTab}
+            </h2>
+          </div>
+          <div className="flex shrink-0 items-center gap-1 sm:gap-3 lg:gap-5">
             {renderRestaurantStatusButton("header")}
             <NotificationCenter
               scope="admin"
@@ -3784,14 +4288,14 @@ export default function AdminDashboard() {
               onClick={() => void toggleOrderAlerts()}
               aria-label={
                 orderAlertsEnabled
-                  ? "Turn off new-order sound"
-                  : "Turn on new-order sound"
+                  ? "Turn off order alert sound"
+                  : "Turn on order alert sound"
               }
               aria-pressed={orderAlertsEnabled}
               title={
                 orderAlertsEnabled
-                  ? "New-order sound is on"
-                  : "New-order sound is off"
+                  ? "Order alert sound is on"
+                  : "Order alert sound is off"
               }
               className={`relative rounded-lg p-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
                 orderAlertsEnabled
@@ -3806,7 +4310,7 @@ export default function AdminDashboard() {
                 }`}
               />
             </button>
-            <div className="flex items-center gap-3 pl-5 border-l border-border">
+            <div className="hidden items-center gap-3 border-l border-border pl-5 md:flex">
               <div className="text-right hidden sm:block">
                 <p className="text-sm font-bold text-foreground">
                   {adminUser?.name || "Administrator"}
@@ -3853,25 +4357,59 @@ export default function AdminDashboard() {
               {/* Scrollable Content Area */}
               <div className="p-6 overflow-y-auto flex-1 space-y-6">
 
-                {/* CDN IMAGE URL */}
+                {/* DEVICE PHOTO UPLOAD */}
                 <div>
-                  <label htmlFor="menu-image-url" className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2 block">Dish image URL</label>
-                  <input
-                    id="menu-image-url"
-                    required
-                    type="url"
-                    inputMode="url"
-                    value={formData.image}
-                    onChange={(event) => setFormData({ ...formData, image: event.target.value })}
-                    className="w-full rounded-xl border border-border bg-background p-3 text-sm text-foreground outline-none transition-colors focus:border-primary"
-                    placeholder="https://cdn.example.com/dish.webp"
-                  />
-                  <p className="mt-2 text-xs text-muted-foreground">Use an HTTPS image URL from your image host or CDN.</p>
-                  {formData.image.startsWith("https://") && (
-                    <div className="relative mt-3 h-36 w-full overflow-hidden rounded-xl border border-border bg-background">
-                      <Image src={formData.image} alt="Dish preview" fill unoptimized className="object-cover" />
+                  <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2 block">Dish photo</span>
+                  <label
+                    htmlFor="menu-image-file"
+                    className="flex min-h-28 cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-primary/35 bg-background/80 px-4 py-5 text-center transition hover:border-primary hover:bg-primary/5"
+                  >
+                    <UploadCloud size={24} className="text-primary" />
+                    <span className="mt-2 text-sm font-black text-foreground">
+                      {isUploadingMenuImage ? "Uploading photo..." : "Upload photo from device"}
+                    </span>
+                    <span className="mt-1 text-xs font-semibold text-muted-foreground">
+                      JPG, PNG, or WEBP. Maximum 3MB.
+                    </span>
+                    <input
+                      id="menu-image-file"
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      disabled={isUploadingMenuImage}
+                      onChange={(event) => void handleMenuImageUpload(event.target.files?.[0])}
+                      className="sr-only"
+                    />
+                  </label>
+                  {menuImageError && (
+                    <p className="mt-2 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-400">
+                      {menuImageError}
+                    </p>
+                  )}
+                  {formData.image && (
+                    <div className="relative mt-3 h-40 w-full overflow-hidden rounded-xl border border-border bg-background">
+                      <Image
+                        src={formData.image}
+                        alt="Dish preview"
+                        fill
+                        unoptimized={formData.image.startsWith("https://")}
+                        className="object-cover"
+                      />
                     </div>
                   )}
+                  <details className="mt-3 rounded-xl border border-border bg-background/60 p-3">
+                    <summary className="cursor-pointer text-xs font-black uppercase tracking-wider text-muted-foreground">
+                      Use image URL instead
+                    </summary>
+                    <input
+                      id="menu-image-url"
+                      type="url"
+                      inputMode="url"
+                      value={formData.image.startsWith("/uploads/") ? "" : formData.image}
+                      onChange={(event) => setFormData({ ...formData, image: event.target.value })}
+                      className="mt-3 w-full rounded-xl border border-border bg-background p-3 text-sm text-foreground outline-none transition-colors focus:border-primary"
+                      placeholder="https://cdn.example.com/dish.webp"
+                    />
+                  </details>
                 </div>
 
                 {/* NAME & CATEGORY */}

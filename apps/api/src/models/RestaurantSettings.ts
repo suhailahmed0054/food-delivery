@@ -36,7 +36,7 @@ const restaurantSettingsSchema = new Schema<RestaurantSettingsRecord>(
     taxRate: { type: Number, min: 0, max: 1, default: 0.05 },
     minimumOrder: { type: Number, min: 0, default: 299 },
     cashEnabled: { type: Boolean, default: true },
-    onlinePaymentEnabled: { type: Boolean, default: true },
+    onlinePaymentEnabled: { type: Boolean, default: false },
     whatsappTemplate: { type: String, maxlength: 2000 }
   },
   { timestamps: true }

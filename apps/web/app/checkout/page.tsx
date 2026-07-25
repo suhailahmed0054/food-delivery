@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import { FormEvent, Suspense, useMemo, useState, useEffect, useCallback, useRef } from "react";
 import {
   ArrowLeft,
-  CreditCard,
   Home,
   Minus,
   Plus,
@@ -31,14 +30,10 @@ import { TableSessionTracker } from "@/components/TableSessionTracker";
 import { DineInScanner } from "@/components/DineInScanner";
 import {
   addCustomerAddress,
-  createCheckout,
   createOrder,
   fetchCustomerAccount,
   fetchPublicRestaurantSettings,
   quoteOrder,
-  verifyCheckoutPayment,
-  type RazorpayCheckoutSession,
-  type RazorpayPaymentResult,
   type OrderQuoteData
 } from "@/lib/api";
 import { clearTableSession, readStoredTableSession, type TableSession } from "@/lib/table-session";
@@ -52,13 +47,33 @@ import {
 } from "@/lib/delivery-zone";
 import { readSessionDeliveryLocation } from "@/lib/delivery-location-session";
 import { getPreciseCurrentPosition } from "@/lib/precise-geolocation";
+import { getCheckoutLoginPath } from "@/lib/auth-navigation";
 
 const LocationPicker = dynamic(
   () => import("@/components/LocationPicker"),
   { ssr: false }
 );
 
-type PaymentMethod = "cash_on_delivery" | "razorpay";
+const CHECKOUT_IDEMPOTENCY_STORAGE_KEY =
+  "al-arab-checkout-idempotency-key";
+
+function createCheckoutIdempotencyKey() {
+  if (typeof window === "undefined") return "";
+
+  const stored = window.sessionStorage.getItem(
+    CHECKOUT_IDEMPOTENCY_STORAGE_KEY
+  );
+  if (stored && /^[A-Za-z0-9._~-]{16,128}$/.test(stored)) return stored;
+
+  const key =
+    typeof window.crypto.randomUUID === "function"
+      ? window.crypto.randomUUID()
+      : Array.from(window.crypto.getRandomValues(new Uint8Array(24)), (byte) =>
+          byte.toString(16).padStart(2, "0")
+        ).join("");
+  window.sessionStorage.setItem(CHECKOUT_IDEMPOTENCY_STORAGE_KEY, key);
+  return key;
+}
 
 interface SavedAddress {
   id: string;
@@ -78,16 +93,9 @@ type DeliveryLocationCheck = {
   message?: string;
 };
 
-const defaultAddresses: SavedAddress[] = [];
+type CheckoutAuthStatus = "checking" | "authenticated" | "redirecting";
 
-const paymentMethods: Array<{
-  id: PaymentMethod;
-  label: string;
-  icon: typeof Wallet;
-}> = [
-  { id: "cash_on_delivery", label: "Cash on Delivery", icon: Wallet },
-  { id: "razorpay", label: "Card / UPI", icon: CreditCard }
-];
+const defaultAddresses: SavedAddress[] = [];
 
 const addressTypes: Array<{
   id: SavedAddress["type"];
@@ -100,111 +108,6 @@ const addressTypes: Array<{
 
 function money(value: number) {
   return `₹${value.toLocaleString("en-IN")}`;
-}
-
-type RazorpayCheckoutOptions = {
-  key: string;
-  amount: number;
-  currency: string;
-  name: string;
-  description: string;
-  order_id: string;
-  prefill: { name: string; email?: string; contact?: string };
-  theme: { color: string };
-  handler: (payment: RazorpayPaymentResult) => void;
-  modal: { ondismiss: () => void };
-};
-
-type RazorpayCheckoutInstance = {
-  open: () => void;
-  on: (
-    event: "payment.failed",
-    callback: (response: { error?: { description?: string } }) => void
-  ) => void;
-};
-
-declare global {
-  interface Window {
-    Razorpay?: new (options: RazorpayCheckoutOptions) => RazorpayCheckoutInstance;
-  }
-}
-
-async function loadRazorpayCheckout() {
-  if (window.Razorpay) return;
-
-  await new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>(
-      'script[data-al-arab-razorpay="true"]'
-    );
-    if (existing) {
-      existing.addEventListener("load", () => resolve(), { once: true });
-      existing.addEventListener(
-        "error",
-        () => reject(new Error("Unable to load the secure payment window")),
-        { once: true }
-      );
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = "https://checkout.razorpay.com/v1/checkout.js";
-    script.async = true;
-    script.dataset.alArabRazorpay = "true";
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Unable to load the secure payment window"));
-    document.head.appendChild(script);
-  });
-
-  if (!window.Razorpay) {
-    throw new Error("Secure online payment is unavailable");
-  }
-}
-
-async function openRazorpayCheckout(
-  session: RazorpayCheckoutSession,
-  customer: { name: string; email?: string; phone?: string }
-) {
-  await loadRazorpayCheckout();
-
-  return new Promise<RazorpayPaymentResult>((resolve, reject) => {
-    let completed = false;
-    const Checkout = window.Razorpay;
-    if (!Checkout) {
-      reject(new Error("Secure online payment is unavailable"));
-      return;
-    }
-
-    const checkout = new Checkout({
-      key: session.keyId,
-      amount: session.amount,
-      currency: session.currency,
-      name: "Al-Arab Restaurant",
-      description: "Food order payment",
-      order_id: session.orderId,
-      prefill: {
-        name: customer.name,
-        email: customer.email,
-        contact: customer.phone
-      },
-      theme: { color: "#D84315" },
-      handler: (payment) => {
-        completed = true;
-        resolve(payment);
-      },
-      modal: {
-        ondismiss: () => {
-          if (!completed) reject(new Error("Online payment was cancelled"));
-        }
-      }
-    });
-
-    checkout.on("payment.failed", (response) => {
-      if (completed) return;
-      completed = true;
-      reject(new Error(response.error?.description || "Online payment failed"));
-    });
-    checkout.open();
-  });
 }
 
 export default function CheckoutPage() {
@@ -224,7 +127,6 @@ export default function CheckoutPage() {
   const [customerAccountId, setCustomerAccountId] = useState<string | null>(null);
   const [deliveryTime, setDeliveryTime] = useState("ASAP");
   const [instructions, setInstructions] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash_on_delivery");
   const [promo, setPromo] = useState(promoCode);
   const [appliedCoupon, setAppliedCoupon] = useState(promoCode);
   const [serverQuote, setServerQuote] = useState<OrderQuoteData | null>(null);
@@ -232,6 +134,9 @@ export default function CheckoutPage() {
   const [quoteError, setQuoteError] = useState("");
   const [notice, setNotice] = useState("");
   const [isPlacing, setIsPlacing] = useState(false);
+  const checkoutIdempotencyKeyRef = useRef<string | null>(null);
+  const [isSessionVerifying, setIsSessionVerifying] = useState(false);
+  const [authStatus, setAuthStatus] = useState<CheckoutAuthStatus>("checking");
   const [tableSession, setTableSession] = useState<TableSession | null>(null);
   const [tableError, setTableError] = useState("");
   const [isTableLoading, setIsTableLoading] = useState(false);
@@ -312,6 +217,8 @@ export default function CheckoutPage() {
   }, []);
 
   useEffect(() => {
+    if (authStatus !== "authenticated") return;
+
     if (items.length === 0) {
       setServerQuote(null);
       setQuoteError("");
@@ -358,7 +265,7 @@ export default function CheckoutPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [appliedCoupon, isDineIn, items, selectedAddress?.phone]);
+  }, [appliedCoupon, authStatus, isDineIn, items, selectedAddress?.phone]);
 
   useEffect(() => {
     if (promoCode && !promo && !appliedCoupon) {
@@ -368,6 +275,8 @@ export default function CheckoutPage() {
   }, [appliedCoupon, promo, promoCode]);
 
   useEffect(() => {
+    if (authStatus !== "authenticated") return;
+
     setTableSession(readStoredTableSession());
     try {
       const storedProfile = window.localStorage.getItem("al-arab-profile");
@@ -433,7 +342,7 @@ export default function CheckoutPage() {
       ]);
       setSelectedAddressId(sessionAddress.id);
     }
-  }, []);
+  }, [authStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -487,15 +396,20 @@ export default function CheckoutPage() {
           );
           return next;
         });
+        setAuthStatus("authenticated");
       })
       .catch(() => {
-        // Guest checkout remains available without an account.
+        if (cancelled) return;
+
+        setAuthStatus("redirecting");
+        const currentPath = `${window.location.pathname}${window.location.search}`;
+        router.replace(getCheckoutLoginPath(currentPath));
       });
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [router]);
 
   function updateQuantity(lineId: string, quantity: number) {
     if (quantity < 1) {
@@ -669,6 +583,20 @@ export default function CheckoutPage() {
   async function placeOrder(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
+    if (isSessionVerifying || isPlacing) return;
+
+    setIsSessionVerifying(true);
+    try {
+      await fetchCustomerAccount();
+    } catch {
+      setAuthStatus("redirecting");
+      const currentPath = `${window.location.pathname}${window.location.search}`;
+      router.replace(getCheckoutLoginPath(currentPath));
+      return;
+    } finally {
+      setIsSessionVerifying(false);
+    }
+
     if (!items.length) {
       setNotice("Add items to your cart before checkout.");
       return;
@@ -725,59 +653,47 @@ export default function CheckoutPage() {
         );
         return;
       }
-
-      let apiOrder = await createOrder({
-        items: items.map((line) => ({
-          menuItem: line.item.id,
-          name: line.item.name,
-          quantity: line.quantity,
-          customization: {
-            ...line.customization,
-            addOns: [...line.customization.addOns]
-          }
-        })),
-        couponCode: appliedCoupon || undefined,
-        paymentMethod,
-        paymentStatus: "pending",
-        orderType: isDineIn ? "dine_in" : "delivery",
-        tableToken: tableSession?.token,
-        customerName: customer.trim(),
-        phone: isDineIn ? undefined : selectedAddress?.phone,
-        email: customerEmail.trim() || undefined,
-        address: isDineIn
-          ? undefined
-          : [selectedAddress?.street, selectedAddress?.city].filter(Boolean).join(", "),
-        deliveryLatitude: isDineIn ? undefined : selectedAddress?.latitude,
-        deliveryLongitude: isDineIn ? undefined : selectedAddress?.longitude,
-        deliveryTime,
-        specialInstructions: instructions.trim() || undefined
-      });
-      if (paymentMethod === "razorpay") {
-        const trackingToken = apiOrder.trackingToken;
-        if (!trackingToken) {
-          throw new Error("Secure payment authorization is unavailable for this order.");
-        }
-
-        const checkoutSession = await createCheckout(
-          apiOrder.orderNumber,
-          trackingToken
-        );
-        const payment = await openRazorpayCheckout(checkoutSession, {
-          name: customer.trim(),
-          email: customerEmail.trim() || undefined,
-          phone: selectedAddress?.phone
-        });
-        const verifiedPayment = await verifyCheckoutPayment(
-          apiOrder.orderNumber,
-          trackingToken,
-          payment
-        );
-
-        apiOrder = {
-          ...verifiedPayment.order,
-          trackingToken
-        };
+      if (!latestSettings.cashEnabled) {
+        setNotice("Cash payments are currently unavailable.");
+        return;
       }
+
+      checkoutIdempotencyKeyRef.current ??= createCheckoutIdempotencyKey();
+      const apiOrder = await createOrder(
+        {
+          items: items.map((line) => ({
+            menuItem: line.item.id,
+            name: line.item.name,
+            quantity: line.quantity,
+            customization: {
+              ...line.customization,
+              addOns: [...line.customization.addOns]
+            }
+          })),
+          couponCode: appliedCoupon || undefined,
+          paymentMethod: "cash_on_delivery",
+          paymentStatus: "pending",
+          orderType: isDineIn ? "dine_in" : "delivery",
+          tableToken: tableSession?.token,
+          customerName: customer.trim(),
+          phone: isDineIn ? undefined : selectedAddress?.phone,
+          email: customerEmail.trim() || undefined,
+          address: isDineIn
+            ? undefined
+            : [selectedAddress?.street, selectedAddress?.city]
+                .filter(Boolean)
+                .join(", "),
+          deliveryLatitude: isDineIn
+            ? undefined
+            : selectedAddress?.latitude,
+          deliveryLongitude: isDineIn
+            ? undefined
+            : selectedAddress?.longitude,
+          deliveryTime,
+          specialInstructions: instructions.trim() || undefined
+        },
+        checkoutIdempotencyKeyRef.current
+      );
       const orderId = apiOrder.orderNumber;
       const formattedAddress = isDineIn
         ? ""
@@ -796,7 +712,7 @@ export default function CheckoutPage() {
           : selectedDeliveryZone?.distanceKm,
         deliveryTime,
         instructions: instructions.trim(),
-        paymentMethod,
+        paymentMethod: "cash_on_delivery",
         paymentStatus: apiOrder.paymentStatus ?? "pending",
         orderType: isDineIn ? "dine_in" : "delivery",
         tableNumber: tableNumber ? String(tableNumber) : undefined,
@@ -826,15 +742,41 @@ export default function CheckoutPage() {
 
       const stored = window.localStorage.getItem("al-arab-orders");
       const orders = parseSavedOrders(stored);
-      window.localStorage.setItem("al-arab-orders", JSON.stringify([order, ...orders]));
+      window.localStorage.setItem(
+        "al-arab-orders",
+        JSON.stringify([
+          order,
+          ...orders.filter((savedOrder) => savedOrder.id !== order.id)
+        ])
+      );
 
       clearCart();
+      checkoutIdempotencyKeyRef.current = null;
+      window.sessionStorage.removeItem(CHECKOUT_IDEMPOTENCY_STORAGE_KEY);
       router.replace(`/orders?placed=${orderId}`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Unable to place order. Please try again.");
     } finally {
       setIsPlacing(false);
     }
+  }
+
+  if (authStatus !== "authenticated") {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#080808] px-6 text-white">
+        <div role="status" className="flex flex-col items-center gap-4 text-center">
+          <span
+            aria-hidden="true"
+            className="h-10 w-10 animate-spin rounded-full border-2 border-white/20 border-t-yellow-500"
+          />
+          <p className="text-sm font-bold text-white/75">
+            {authStatus === "redirecting"
+              ? "Taking you to sign in..."
+              : "Checking your account..."}
+          </p>
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -1213,28 +1155,17 @@ export default function CheckoutPage() {
               </span>
               <div>
                 <h2 className="text-base font-bold text-white sm:text-lg">Payment Method</h2>
-                <p className="text-[11px] text-white/50 sm:text-xs">Choose how you want to pay</p>
+                <p className="text-[11px] text-white/50 sm:text-xs">Pay when your order arrives</p>
               </div>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              {paymentMethods.map((method) => {
-                const Icon = method.icon;
-                const isSelected = paymentMethod === method.id;
-
-                return (
-                  <button
-                    key={method.id}
-                    type="button"
-                    onClick={() => setPaymentMethod(method.id)}
-                    aria-pressed={isSelected}
-                    className={`checkout-choice-button relative flex min-h-14 items-center justify-center gap-2.5 overflow-hidden rounded-full border px-3 text-xs font-black transition-all duration-300 sm:px-4 sm:text-sm ${isSelected ? "is-selected" : ""}`}
-                  >
-                    <Icon size={18} />
-                    <span className="relative z-10">{isDineIn && method.id === "cash_on_delivery" ? "Pay at Table" : method.label}</span>
-                  </button>
-                );
-              })}
+            <div className="grid gap-3">
+              <div className="checkout-choice-button is-selected relative flex min-h-14 items-center justify-center gap-2.5 overflow-hidden rounded-full border px-3 text-xs font-black sm:px-4 sm:text-sm">
+                <Wallet size={18} />
+                <span className="relative z-10">
+                  {isDineIn ? "Pay at Table" : "Cash on Delivery"}
+                </span>
+              </div>
             </div>
           </LiquidGlass>
         </section>
@@ -1429,6 +1360,7 @@ export default function CheckoutPage() {
               disabled={
                 !items.length ||
                 isPlacing ||
+                isSessionVerifying ||
                 isQuoteLoading ||
                 !serverQuote ||
                 Boolean(quoteError) ||
@@ -1444,8 +1376,10 @@ export default function CheckoutPage() {
               <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-in-out" />
               <Receipt size={18} className="relative z-10" />
               <span className="relative z-10 text-sm sm:text-base">
-                {isPlacing
-                  ? "Placing Order..."
+                {isSessionVerifying
+                  ? "Checking Account..."
+                  : isPlacing
+                    ? "Placing Order..."
                   : isQuoteLoading
                     ? "Checking Prices..."
                     : quoteError

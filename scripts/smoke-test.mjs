@@ -1,4 +1,5 @@
 const webUrl = normalizeUrl(process.env.DEPLOYMENT_WEB_URL);
+const adminUrl = normalizeUrl(process.env.DEPLOYMENT_ADMIN_URL);
 const apiUrl = normalizeUrl(process.env.DEPLOYMENT_API_URL);
 const allowHttp = process.env.ALLOW_HTTP_SMOKE_TEST === "true";
 
@@ -29,6 +30,7 @@ async function request(name, url, expectedStatus = 200, init = {}) {
 
 async function main() {
   requireUrl("DEPLOYMENT_WEB_URL", webUrl);
+  requireUrl("DEPLOYMENT_ADMIN_URL", adminUrl);
   requireUrl("DEPLOYMENT_API_URL", apiUrl);
 
   const live = await request("API liveness", `${apiUrl}/health/live`);
@@ -37,18 +39,37 @@ async function main() {
 
   const ready = await request("API readiness", `${apiUrl}/health/ready`);
   const readyBody = await ready.json();
-  if (!readyBody.ok || readyBody.database !== "connected" || readyBody.redis !== "connected") {
+  if (
+    !readyBody.ok ||
+    readyBody.database !== "connected" ||
+    !["connected", "disabled"].includes(readyBody.redis)
+  ) {
     throw new Error("API dependencies are not ready");
   }
 
-  const menu = await request("Public menu", `${apiUrl}/menu`, 200, {
-    headers: { Origin: webUrl }
-  });
-  if (menu.headers.get("access-control-allow-origin") !== webUrl) {
-    throw new Error("API CORS does not allow the deployed web origin");
+  for (const [label, origin] of [
+    ["customer", webUrl],
+    ["admin", adminUrl]
+  ]) {
+    const menu = await request(`Public menu (${label} origin)`, `${apiUrl}/menu`, 200, {
+      headers: { Origin: origin }
+    });
+    if (menu.headers.get("access-control-allow-origin") !== origin) {
+      throw new Error(`API CORS does not allow the deployed ${label} origin`);
+    }
   }
   await request("Public restaurant settings", `${apiUrl}/settings/public`);
   await request("Protected admin session", `${apiUrl}/auth/me`, 401);
+  await request(
+    "Legacy phone tracking claim is disabled",
+    `${apiUrl}/orders/AR-NOTREAL/tracking/claim`,
+    404,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: "9999999999" })
+    }
+  );
   await request("Webhook rejects invalid signatures", `${apiUrl}/payments/webhook`, 400, {
     method: "POST",
     headers: {
@@ -65,6 +86,12 @@ async function main() {
         throw new Error(`Web ${route} is missing ${header}`);
       }
     }
+  }
+
+  const adminRoot = await request("Admin subdomain root", adminUrl, 307);
+  const adminLocation = adminRoot.headers.get("location");
+  if (!adminLocation || new URL(adminLocation, adminUrl).pathname !== "/admin") {
+    throw new Error("Admin subdomain root does not redirect to /admin");
   }
 
   console.log("Deployment smoke test passed.");

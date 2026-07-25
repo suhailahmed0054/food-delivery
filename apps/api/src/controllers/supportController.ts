@@ -31,12 +31,13 @@ import {
 } from "../services/refundService";
 
 const supportImagesSchema = z.array(z.string().max(1_500_000)).max(4).optional();
+const trackingTokenSchema = z.string().trim().min(32).max(128);
 const createIssueSchema = z.object({
   orderNumber: z.string().trim().min(1).max(100),
   category: z.enum(["missing_items", "wrong_items", "poor_quality", "delivery_delay", "other"]),
   description: z.string().trim().min(1).max(4000),
   desiredResolution: z.enum(["refund", "redelivery", "feedback"]),
-  trackingToken: z.string().trim().max(512).optional(),
+  trackingToken: trackingTokenSchema.optional(),
   images: supportImagesSchema
 });
 const supportMessageSchema = z.object({
@@ -85,11 +86,10 @@ function routeId(req: Request) {
 }
 
 function supportTrackingToken(req: Request) {
-  const headerToken = req.header("x-order-tracking-token")?.trim();
-  if (headerToken) return headerToken;
-  return typeof req.query.trackingToken === "string"
-    ? req.query.trackingToken.trim()
-    : undefined;
+  const parsed = trackingTokenSchema.safeParse(
+    req.header("x-order-tracking-token")
+  );
+  return parsed.success ? parsed.data : undefined;
 }
 
 function issueCustomerId(issue: unknown) {
@@ -154,39 +154,31 @@ export async function createIssue(req: Request, res: Response) {
     }
   }
 
-  // Find order
-  let order = isMongoConnected()
-    ? await Order.findOne({ orderNumber })
-    : await getLocalOrder(orderNumber);
+  const isAdminOrStaff = req.user && (req.user.role === "admin" || req.user.role === "kitchen");
+  const isAuthenticatedCustomer = req.user?.role === "customer";
+  let order;
 
-  if (!order) {
-    return res.status(404).json({ message: "Order not found" });
+  if (!isAdminOrStaff && !isAuthenticatedCustomer) {
+    if (!trackingToken) {
+      return res.status(401).json({
+        message: "A secure tracking token is required for guest support."
+      });
+    }
+    order = await findOrderForTracking(orderNumber, trackingToken);
+    if (!order) {
+      return res.status(403).json({ message: "Invalid order tracking token" });
+    }
+  } else {
+    order = isMongoConnected()
+      ? await Order.findOne({ orderNumber })
+      : await getLocalOrder(orderNumber);
+    if (!order) return res.status(404).json({ message: "Order not found" });
   }
 
-  // Authorization validation
-  const isAdminOrStaff = req.user && (req.user.role === "admin" || req.user.role === "kitchen");
-
-  if (!isAdminOrStaff) {
-    if (req.user && req.user.role === "customer") {
-      // Authenticated customer: check ownership
-      const orderCustomerId = String(order.customer?._id || order.customer || "");
-      if (orderCustomerId !== req.user.id) {
-        return res.status(403).json({ message: "You can only report issues for your own orders" });
-      }
-    } else {
-      if (typeof trackingToken !== "string" || !trackingToken.trim()) {
-        return res.status(401).json({
-          message: "A secure tracking token is required for guest support."
-        });
-      }
-      const verifiedOrder = await findOrderForTracking(orderNumber, trackingToken);
-      if (!verifiedOrder) {
-        return res.status(403).json({ message: "Invalid order tracking token" });
-      }
-
-      // Use the verified order returned by the tracking service so guest access
-      // never depends on predictable contact information.
-      order = verifiedOrder as typeof order;
+  if (isAuthenticatedCustomer) {
+    const orderCustomerId = String(order.customer?._id || order.customer || "");
+    if (orderCustomerId !== req.user!.id) {
+      return res.status(403).json({ message: "You can only report issues for your own orders" });
     }
   }
 

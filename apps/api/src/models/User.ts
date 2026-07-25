@@ -21,8 +21,8 @@ export type UserRecord = {
   _id: Types.ObjectId;
   name: string;
   email: string;
+  emailVerified: boolean;
   passwordHash?: string;
-  googleId?: string;
   phone?: string;
   addresses: CustomerAddress[];
   notificationPreferences: CustomerNotificationPreferences;
@@ -40,8 +40,8 @@ const userSchema = new Schema<UserRecord>(
   {
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
-    passwordHash: { type: String },
-    googleId: { type: String },
+    emailVerified: { type: Boolean, default: false },
+    passwordHash: { type: String, select: false },
     phone: { type: String },
     addresses: [
       {

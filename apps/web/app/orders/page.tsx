@@ -27,9 +27,7 @@ import {
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { io } from "socket.io-client";
-import { Customer3DNav } from "@/components/Customer3DNav";
 import {
-  claimOrderTracking,
   fetchCustomerOrders,
   fetchMenu,
   fetchOrderTracking,
@@ -105,7 +103,7 @@ function formatTrackingTime(value?: string) {
 function getTrackingSteps(order: SavedOrder) {
   const steps =
     order.orderType === "dine_in"
-      ? ["Placed", "Accepted", "Preparing", "Ready", "Served"]
+      ? ["Placed", "Accepted", "Preparing", "Ready", "Delivered"]
       : ["Placed", "Accepted", "Preparing", "Ready", "On the way"];
   const indexes: Record<string, number> = {
     pending: 0,
@@ -207,7 +205,6 @@ export default function OrdersPage() {
   const [trackingConnection, setTrackingConnection] = useState<
     "idle" | "connecting" | "live" | "polling" | "error"
   >("idle");
-  const legacyClaimAttempts = useRef(new Set<string>());
   const accountOnlyOrderIds = useRef(new Set<string>());
 
   const [issues, setIssues] = useState<SupportIssue[]>([]);
@@ -414,28 +411,6 @@ export default function OrdersPage() {
       ),
     [activeOrders]
   );
-
-  useEffect(() => {
-    const legacyOrders = orders.filter(
-      (order) =>
-        isActiveStatus(order.status) &&
-        !order.trackingToken &&
-        order.phone &&
-        !legacyClaimAttempts.current.has(order.id)
-    );
-    if (legacyOrders.length === 0) return;
-
-    legacyOrders.forEach((order) => {
-      legacyClaimAttempts.current.add(order.id);
-      void claimOrderTracking(order.id, order.phone)
-        .then((claimed) =>
-          mergeTrackingUpdate(claimed.order, claimed.trackingToken)
-        )
-        .catch(() => {
-          // Older orders remain visible
-        });
-    });
-  }, [mergeTrackingUpdate, orders]);
 
   useEffect(() => {
     const credentials = JSON.parse(trackingCredentialsKey) as Array<{
@@ -725,20 +700,23 @@ export default function OrdersPage() {
       <article
         key={order.id}
         data-customer-reveal
-        className={`customer-order-card customer-order-card-mobile customer-reveal relative overflow-hidden rounded-2xl border p-5 ${
+        className={`customer-order-card customer-order-card-mobile customer-reveal relative overflow-hidden rounded-2xl border p-4 min-[360px]:p-5 ${
           isActive
             ? "is-active border-yellow-500/40 bg-gradient-to-b from-yellow-500/5 to-[#111111]"
             : "border-white/5 bg-[#111111]"
         }`}
       >
-        <div className="flex items-start justify-between gap-3 border-b border-white/10 pb-4">
-          <div className="min-w-0">
-            <h2 className="flex items-center gap-2 font-heading text-lg font-semibold text-white">
-              Al-Arab Restaurant <ChevronRight size={16} className="shrink-0 text-white/40" />
+        <div className="flex flex-col items-stretch gap-3 border-b border-white/10 pb-4 min-[360px]:flex-row min-[360px]:items-start min-[360px]:justify-between">
+          <div className="w-full min-w-0 flex-1">
+            <h2 className="flex min-w-0 items-center gap-2 font-heading text-lg font-semibold text-white">
+              <span className="min-w-0 break-words">Al-Arab Restaurant</span>
+              <ChevronRight size={16} className="shrink-0 text-white/40" />
             </h2>
-            <p className="mt-1 flex items-center gap-1.5 text-xs text-white/50">
-              <Clock size={12} />
-              {formatDate(order.createdAt)} · Order #{order.id}
+            <p className="mt-1 flex min-w-0 items-start gap-1.5 text-xs leading-relaxed text-white/50">
+              <Clock size={12} className="mt-0.5 shrink-0" />
+              <span className="min-w-0 break-words">
+                {formatDate(order.createdAt)} · Order #{order.id}
+              </span>
             </p>
             {order.orderType === "dine_in" && order.tableNumber && (
               <p className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-yellow-500/25 bg-yellow-500/10 px-2 py-1 text-xs font-black text-yellow-500">
@@ -749,7 +727,7 @@ export default function OrdersPage() {
           </div>
 
           {isActive ? (
-            <span className="customer-status-badge shrink-0 rounded-md border border-yellow-500/30 bg-yellow-500/20 px-2.5 py-1 text-xs font-black text-yellow-500">
+            <span className="customer-status-badge inline-flex w-full max-w-full shrink-0 items-center justify-center self-start whitespace-normal break-words rounded-md border border-yellow-500/30 px-2.5 py-1 text-center text-xs font-black leading-tight min-[360px]:w-auto min-[360px]:max-w-[45%]">
               {statusLabel(order.status)}
             </span>
           ) : (
@@ -774,8 +752,8 @@ export default function OrdersPage() {
 
         {isActive && (
           <div className="mt-6 space-y-3">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-xl border border-yellow-500/20 bg-yellow-500/[0.07] p-4">
+            <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+              <div className="min-w-0 rounded-xl border border-yellow-500/20 bg-yellow-500/[0.07] p-4">
                 <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-yellow-500">
                   <Clock size={14} />
                   {order.orderType === "dine_in"
@@ -791,12 +769,12 @@ export default function OrdersPage() {
               </div>
 
               {order.deliveryAgent?.name ? (
-                <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+                <div className="min-w-0 rounded-xl border border-white/10 bg-white/[0.04] p-4">
                   <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/45">
                     <Bike size={14} className="text-yellow-500" />
                     Delivery partner
                   </p>
-                  <p className="mt-2 font-bold text-white">
+                  <p className="mt-2 break-words font-bold text-white">
                     {order.deliveryAgent.name}
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -824,12 +802,12 @@ export default function OrdersPage() {
                   </div>
                 </div>
               ) : (
-                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="min-w-0 rounded-xl border border-white/10 bg-white/[0.03] p-4">
                   <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/45">
                     <Bike size={14} className="text-yellow-500" />
                     Delivery partner
                   </p>
-                  <p className="mt-2 text-sm font-semibold text-white/70">
+                  <p className="mt-2 break-words text-sm font-semibold text-white/70">
                     {order.orderType === "dine_in"
                       ? "Your table order is with the restaurant team."
                       : "A rider will appear here after assignment."}
@@ -838,18 +816,18 @@ export default function OrdersPage() {
               )}
             </div>
 
-            <div className="customer-track-rail rounded-xl border border-white/5 bg-black/50 p-4">
-              <div className="flex items-start text-[9px] font-bold uppercase tracking-wide text-white/45">
+            <div className="customer-track-rail min-w-0 rounded-xl border border-white/5 bg-black/50 p-3 min-[390px]:p-4">
+              <div className="flex min-w-0 items-start text-[8px] font-bold uppercase tracking-wide text-white/45 min-[390px]:text-[9px]">
                 {steps.map((step, index) => {
                   const reached = activeIndex >= index;
                   return (
                     <div
                       key={step}
-                      className={`flex items-start ${
+                      className={`flex min-w-0 items-start ${
                         index < steps.length - 1 ? "flex-1" : ""
                       }`}
                     >
-                      <div className="flex w-12 shrink-0 flex-col items-center gap-2 text-center">
+                      <div className="flex w-10 shrink-0 flex-col items-center gap-2 text-center min-[390px]:w-12">
                         <span
                           className={`h-3 w-3 rounded-full ${
                             reached
@@ -857,13 +835,13 @@ export default function OrdersPage() {
                               : "bg-white/10"
                           }`}
                         />
-                        <span className={reached ? "text-yellow-500" : ""}>
+                        <span className={`max-w-full leading-[1.15] [overflow-wrap:anywhere] ${reached ? "text-yellow-500" : ""}`}>
                           {step}
                         </span>
                       </div>
                       {index < steps.length - 1 && (
                         <span
-                          className={`mt-[5px] h-0.5 min-w-2 flex-1 rounded ${
+                          className={`mt-[5px] h-0.5 min-w-0 flex-1 rounded ${
                             activeIndex > index
                               ? "bg-yellow-500"
                               : "bg-white/10"
@@ -874,11 +852,11 @@ export default function OrdersPage() {
                   );
                 })}
               </div>
-              <div className="mt-4 flex items-center justify-between gap-3 border-t border-white/5 pt-3 text-[10px] text-white/40">
-                <span>
+              <div className="mt-4 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/5 pt-3 text-[10px] text-white/40">
+                <span className="min-w-0">
                   Last update {formatTrackingTime(latestTrackingUpdate(order))}
                 </span>
-                <span className="font-black uppercase tracking-wider text-yellow-500/80">
+                <span className="ml-auto shrink-0 text-right font-black uppercase tracking-wider text-yellow-500/80">
                   {order.trackingToken ? "Secure tracking" : "Local status"}
                 </span>
               </div>
@@ -972,7 +950,7 @@ export default function OrdersPage() {
           </div>
         )}
 
-        <div className="mt-5 flex items-center justify-between border-t border-white/10 pt-4">
+        <div className="mt-5 flex flex-col items-stretch gap-3 border-t border-white/10 pt-4 min-[360px]:flex-row min-[360px]:items-center min-[360px]:justify-between">
           <div>
             <p className="mb-0.5 text-xs text-white/50">Total Paid</p>
             <p className="text-lg font-black text-yellow-500">{money(order.total)}</p>
@@ -985,7 +963,7 @@ export default function OrdersPage() {
                 setCancellingOrder(order);
                 setCancelSubmitError("");
               }}
-              className="flex min-h-11 items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-5 py-2.5 text-xs font-black text-red-400 transition hover:bg-red-500/20 hover:scale-[1.02] active:scale-[0.98]"
+              className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-5 py-2.5 text-xs font-black text-red-400 transition hover:bg-red-500/20 hover:scale-[1.02] active:scale-[0.98] min-[360px]:w-auto"
             >
               <XCircle size={15} />
               Cancel Order
@@ -993,7 +971,7 @@ export default function OrdersPage() {
           )}
 
           {!isActive && (
-            <div className="flex flex-wrap justify-end gap-2">
+            <div className="flex w-full flex-wrap justify-start gap-2 min-[360px]:w-auto min-[360px]:justify-end">
               {!isCancelledStatus(order.status) &&
                 order.items.some((item) => item.itemId) && (
                   <button
@@ -1401,7 +1379,6 @@ export default function OrdersPage() {
         </div>
       )}
 
-      <Customer3DNav />
     </main>
   );
 }

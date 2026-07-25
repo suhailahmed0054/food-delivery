@@ -27,10 +27,8 @@ import {
   X,
 } from "lucide-react";
 
-import { Customer3DNav } from "@/components/Customer3DNav";
 import {
   addCustomerAddress,
-  changeCustomerPassword,
   claimCustomerOrders,
   deleteCustomerAddress,
   fetchCustomerAccount,
@@ -90,8 +88,6 @@ export default function ProfilePage() {
     orderUpdates: true,
     offers: true,
   });
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [loadError, setLoadError] = useState("");
@@ -345,22 +341,6 @@ export default function ProfilePage() {
       setStatusMessage("Notification preferences updated");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Unable to update preferences");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const savePassword = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setIsSaving(true);
-    try {
-      await changeCustomerPassword(currentPassword, newPassword);
-      setCurrentPassword("");
-      setNewPassword("");
-      setStatusMessage("Password changed");
-      closePanel();
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Unable to change password");
     } finally {
       setIsSaving(false);
     }
@@ -777,51 +757,19 @@ export default function ProfilePage() {
 
               {activePanel === "security" && (
                 <div className="space-y-3">
-                  <form
-                    onSubmit={savePassword}
-                    className="space-y-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4"
-                  >
+                  <div className="space-y-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
                     <div className="flex items-center gap-3">
                       <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                         <LockKeyhole size={18} aria-hidden="true" />
                       </span>
                       <div>
-                        <h3 className="font-black text-white">Change password</h3>
-                        <p className="mt-1 text-xs text-white/50">Use at least 8 characters.</p>
+                        <h3 className="font-black text-white">Passwordless sign in</h3>
+                        <p className="mt-1 text-xs leading-relaxed text-white/50">
+                          Your account is protected with a one-time code sent to your verified email address.
+                        </p>
                       </div>
                     </div>
-                    <label className="block text-xs font-bold text-white/65">
-                      Current password
-                      <input
-                        required
-                        type="password"
-                        autoComplete="current-password"
-                        value={currentPassword}
-                        onChange={(event) => setCurrentPassword(event.target.value)}
-                        className={inputClassName}
-                      />
-                    </label>
-                    <label className="block text-xs font-bold text-white/65">
-                      New password
-                      <input
-                        required
-                        type="password"
-                        minLength={8}
-                        maxLength={72}
-                        autoComplete="new-password"
-                        value={newPassword}
-                        onChange={(event) => setNewPassword(event.target.value)}
-                        className={inputClassName}
-                      />
-                    </label>
-                    <button
-                      type="submit"
-                      disabled={isSaving}
-                      className="min-h-12 w-full rounded-xl bg-primary px-5 py-3 font-black text-primary-foreground disabled:opacity-60"
-                    >
-                      {isSaving ? "Updating…" : "Update password"}
-                    </button>
-                  </form>
+                  </div>
                   <button
                     type="button"
                     onClick={openPrivacy}
@@ -885,7 +833,6 @@ export default function ProfilePage() {
         </div>
       )}
 
-      <Customer3DNav />
     </main>
   );
 }

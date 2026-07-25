@@ -7,6 +7,7 @@ const tokenAudience = "al-arab-web";
 
 export function signAccessToken(user: { id: string; role: UserRole }) {
   return jwt.sign({ sub: user.id, role: user.role }, env.jwtAccessSecret, {
+    algorithm: "HS256",
     expiresIn: "15m",
     issuer: tokenIssuer,
     audience: tokenAudience
@@ -15,6 +16,7 @@ export function signAccessToken(user: { id: string; role: UserRole }) {
 
 export function signRefreshToken(user: { id: string; role: UserRole }) {
   return jwt.sign({ sub: user.id, role: user.role }, env.jwtRefreshSecret, {
+    algorithm: "HS256",
     expiresIn: "7d",
     issuer: tokenIssuer,
     audience: tokenAudience
@@ -23,6 +25,7 @@ export function signRefreshToken(user: { id: string; role: UserRole }) {
 
 export function verifyAccessToken(token: string) {
   return jwt.verify(token, env.jwtAccessSecret, {
+    algorithms: ["HS256"],
     issuer: tokenIssuer,
     audience: tokenAudience
   }) as { sub: string; role: UserRole };
@@ -30,6 +33,7 @@ export function verifyAccessToken(token: string) {
 
 export function verifyRefreshToken(token: string) {
   return jwt.verify(token, env.jwtRefreshSecret, {
+    algorithms: ["HS256"],
     issuer: tokenIssuer,
     audience: tokenAudience
   }) as { sub: string; role: UserRole };

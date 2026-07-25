@@ -30,8 +30,14 @@ function isMongoConnected() {
   return RestaurantSettings.db.readyState === 1;
 }
 
+function withCodOnlySettings<T extends { onlinePaymentEnabled: boolean }>(settings: T) {
+  return { ...settings, onlinePaymentEnabled: false };
+}
+
 export async function getSettings(_req: Request, res: Response) {
-  if (!isMongoConnected()) return res.json(await readLocalSettings());
+  if (!isMongoConnected()) {
+    return res.json(withCodOnlySettings(await readLocalSettings()));
+  }
 
   const settings = await RestaurantSettings.findOneAndUpdate(
     { key: "restaurant" },
@@ -45,7 +51,7 @@ export async function getSettings(_req: Request, res: Response) {
       { whatsappTemplate: defaultDeliveryWhatsAppTemplate }
     );
   }
-  return res.json(settings);
+  return res.json(settings ? withCodOnlySettings(settings) : settings);
 }
 
 export async function updateSettings(req: Request, res: Response) {
@@ -57,13 +63,15 @@ export async function updateSettings(req: Request, res: Response) {
     });
   }
 
+  const codOnlySettings = withCodOnlySettings(parsed.data);
+
   if (!isMongoConnected()) {
-    return res.json(await writeLocalSettings(parsed.data));
+    return res.json(await writeLocalSettings(codOnlySettings));
   }
 
   const settings = await RestaurantSettings.findOneAndUpdate(
     { key: "restaurant" },
-    { key: "restaurant", ...parsed.data },
+    { key: "restaurant", ...codOnlySettings },
     { new: true, upsert: true, runValidators: true }
   ).lean();
   return res.json(settings);

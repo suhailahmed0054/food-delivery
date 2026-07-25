@@ -7,7 +7,21 @@ const adminCookieNames = [
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  if (pathname === "/admin/login") return NextResponse.next();
+  const hostname = (request.headers.get("host") ?? "")
+    .split(":")[0]
+    .toLowerCase();
+
+  if (hostname === "admin.al-arabrestaurant.cc.cd" && pathname === "/") {
+    return NextResponse.redirect(new URL("/admin", request.url));
+  }
+
+  if (!pathname.startsWith("/admin")) {
+    return NextResponse.next();
+  }
+
+  if (pathname === "/admin/login") {
+    return NextResponse.next();
+  }
 
   const hasAdminSession = adminCookieNames.some((name) =>
     Boolean(request.cookies.get(name)?.value)
@@ -22,5 +36,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/admin/:path*"]
+  matcher: ["/", "/admin/:path*"]
 };

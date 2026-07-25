@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { io, type Socket } from "socket.io-client";
 import {
@@ -85,6 +86,9 @@ export function NotificationCenter({
 }: NotificationCenterProps) {
   const router = useRouter();
   const socketRef = useRef<Socket | null>(null);
+  const triggerButtonRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState<InAppNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -155,11 +159,42 @@ export function NotificationCenter({
 
   useEffect(() => {
     if (!open) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+    const triggerButton = triggerButtonRef.current;
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0);
+    const handleDialogKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+      const focusableElements = dialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      if (!focusableElements?.length) return;
+
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      if (event.shiftKey && document.activeElement === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (!event.shiftKey && document.activeElement === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
+      }
     };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
+
+    window.addEventListener("keydown", handleDialogKeyDown);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener("keydown", handleDialogKeyDown);
+      document.body.style.overflow = previousBodyOverflow;
+      triggerButton?.focus({ preventScroll: true });
+    };
   }, [open]);
 
   const openNotification = async (notification: InAppNotification) => {
@@ -207,6 +242,7 @@ export function NotificationCenter({
   return (
     <>
       <button
+        ref={triggerButtonRef}
         type="button"
         onClick={() => {
           setOpen(true);
@@ -214,6 +250,8 @@ export function NotificationCenter({
         }}
         aria-label={`Notifications${unreadCount ? `, ${unreadCount} unread` : ""}`}
         aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={`${scope}-notifications-dialog`}
         className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/80 transition hover:border-primary/40 hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 active:scale-95 ${className}`}
       >
         {unreadCount > 0 ? <BellRing size={19} /> : <Bell size={19} />}
@@ -224,8 +262,8 @@ export function NotificationCenter({
         )}
       </button>
 
-      {open && (
-        <div className="fixed inset-0 z-[100] flex items-end justify-center sm:items-start sm:justify-end sm:p-5">
+      {open && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 z-[1000] flex items-end justify-center px-[max(0.5rem,env(safe-area-inset-left))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-[calc(0.5rem+env(safe-area-inset-top))] sm:items-start sm:justify-end sm:p-5">
           <button
             type="button"
             aria-label="Close notifications"
@@ -233,10 +271,12 @@ export function NotificationCenter({
             onClick={() => setOpen(false)}
           />
           <section
+            ref={dialogRef}
+            id={`${scope}-notifications-dialog`}
             role="dialog"
             aria-modal="true"
             aria-labelledby={`${scope}-notifications-title`}
-            className="relative flex max-h-[86dvh] w-full flex-col overflow-hidden rounded-t-[2rem] border border-white/10 bg-[#111111] text-white shadow-2xl sm:max-h-[calc(100dvh-2.5rem)] sm:max-w-md sm:rounded-2xl"
+            className="relative isolate flex max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem)] w-full flex-col overflow-hidden rounded-[1.5rem] border border-white/10 bg-[#111111] text-white shadow-2xl sm:max-h-[calc(100dvh-2.5rem)] sm:max-w-md sm:rounded-2xl"
           >
             <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
               <div>
@@ -255,6 +295,7 @@ export function NotificationCenter({
                   </button>
                 )}
                 <button
+                  ref={closeButtonRef}
                   type="button"
                   onClick={() => setOpen(false)}
                   aria-label="Close notifications"
@@ -278,7 +319,7 @@ export function NotificationCenter({
               </div>
             )}
 
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-3 sm:pb-0">
               {isLoading && notifications.length === 0 && (
                 <div className="space-y-3 p-5" aria-label="Loading notifications">
                   {[1, 2, 3].map((item) => (
@@ -307,26 +348,28 @@ export function NotificationCenter({
                   <button
                     key={notification.id}
                     type="button"
+                    data-notification-unread={notification.readAt ? "false" : "true"}
                     onClick={() => void openNotification(notification)}
-                    className={`flex w-full gap-3 border-b border-white/[0.07] px-5 py-4 text-left transition hover:bg-white/[0.05] ${notification.readAt ? "bg-transparent" : "bg-primary/[0.08]"}`}
+                    className={`flex w-full gap-3 border-b border-white/[0.07] px-5 py-4 text-left transition hover:bg-white/[0.05] ${notification.readAt ? "bg-transparent" : "bg-[#FFF7F2]"}`}
                   >
-                    <span className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${notification.readAt ? "border-white/10 bg-white/5 text-white/50" : "border-primary/25 bg-primary/15 text-primary"}`}>
+                    <span className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${notification.readAt ? "border-white/10 bg-white/5 text-white/50" : "border-[#D84315]/20 bg-[#D84315]/[0.06] text-[#6D574D]"}`}>
                       <Icon size={18} />
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-start justify-between gap-3">
-                        <span className="text-sm font-black leading-snug">{notification.title}</span>
+                        <span className={`text-sm font-black leading-snug ${notification.readAt ? "" : "text-[#3E2723]"}`}>{notification.title}</span>
                         {!notification.readAt && <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-[#D84315]" />}
                       </span>
-                      <span className="mt-1 line-clamp-2 text-xs leading-5 text-white/55">{notification.message}</span>
-                      <span className="mt-2 block text-[10px] font-bold uppercase tracking-wide text-white/35">{relativeTime(notification.createdAt)}</span>
+                      <span className={`mt-1 line-clamp-2 text-xs leading-5 ${notification.readAt ? "text-white/55" : "text-[#6D574D]"}`}>{notification.message}</span>
+                      <span className={`mt-2 block text-[10px] font-bold uppercase tracking-wide ${notification.readAt ? "text-white/35" : "text-[#6D574D]"}`}>{relativeTime(notification.createdAt)}</span>
                     </span>
                   </button>
                 );
               })}
             </div>
           </section>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );

@@ -91,7 +91,7 @@ export function MenuSearchOverlay({
       role="dialog"
       aria-modal="true"
       aria-labelledby="menu-search-title"
-      className="fixed inset-0 z-[90] flex flex-col overflow-hidden bg-background text-foreground animate-in fade-in slide-in-from-right-4 duration-200"
+      className="fixed inset-0 z-[90] flex w-full max-w-[100vw] flex-col overflow-x-hidden bg-background text-foreground animate-in fade-in slide-in-from-right-4 duration-200"
     >
       <header className="shrink-0 border-b border-border bg-background/95 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
         <div className="mx-auto grid h-16 w-full max-w-3xl grid-cols-[44px_1fr_44px] items-center px-3 sm:px-5">
@@ -111,7 +111,7 @@ export function MenuSearchOverlay({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className="mx-auto w-full max-w-3xl px-4 pb-[calc(2rem+env(safe-area-inset-bottom))] pt-4 sm:px-6 sm:pt-6">
+        <div className="mx-auto w-full max-w-3xl px-3 pb-[calc(2rem+env(safe-area-inset-bottom))] pt-4 min-[390px]:px-4 sm:px-6 sm:pt-6">
           <div className="relative">
             <Search
               size={21}
@@ -126,10 +126,10 @@ export function MenuSearchOverlay({
               autoComplete="off"
               value={searchTerm}
               onChange={(event) => onSearchTermChange(event.target.value)}
-              placeholder="Search biryani, kebabs, shawarma..."
-              className="h-16 w-full appearance-none rounded-2xl border border-border bg-card pl-12 pr-24 text-base font-bold text-foreground shadow-sm outline-none transition placeholder:text-muted-foreground/70 focus:border-primary focus:ring-2 focus:ring-primary/15 [&::-webkit-search-cancel-button]:hidden"
+              placeholder="Search dishes or ingredients"
+              className={`h-14 w-full appearance-none rounded-2xl border border-border bg-card pl-11 text-[clamp(0.8rem,3.8vw,1rem)] font-bold text-foreground shadow-sm outline-none transition placeholder:text-muted-foreground/70 focus:border-primary focus:ring-2 focus:ring-primary/15 [&::-webkit-search-cancel-button]:hidden ${searchTerm ? "pr-[6.25rem]" : "pr-[3.75rem]"}`}
             />
-            <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center">
+            <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center">
               {searchTerm && (
                 <button
                   type="button"
@@ -138,18 +138,18 @@ export function MenuSearchOverlay({
                     onSearchTermChange("");
                     inputRef.current?.focus();
                   }}
-                  className="flex h-10 w-10 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                  className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground"
                 >
                   <X size={21} aria-hidden="true" />
                 </button>
               )}
-              <span className="mx-1 h-7 w-px bg-border" aria-hidden="true" />
+              {searchTerm && <span className="h-7 w-px bg-border" aria-hidden="true" />}
               <button
                 type="button"
                 aria-label={isListening ? "Listening for dish name" : "Search by voice"}
                 aria-pressed={isListening}
                 onClick={startVoiceSearch}
-                className={`flex h-10 w-10 items-center justify-center rounded-full transition active:scale-95 ${
+                className={`flex h-11 w-11 items-center justify-center rounded-full transition active:scale-95 ${
                   isListening
                     ? "animate-pulse bg-[#D84315]/10 text-[#D84315]"
                     : "text-[#D84315] hover:bg-[#D84315]/10"
@@ -171,7 +171,7 @@ export function MenuSearchOverlay({
               <p className="text-[11px] font-black uppercase tracking-[0.18em] text-muted-foreground">
                 Popular searches
               </p>
-              <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className="-mx-3 mt-3 flex snap-x snap-proximity gap-2 overflow-x-auto overscroll-x-contain px-3 pb-1 [-ms-overflow-style:none] [scrollbar-width:none] min-[390px]:-mx-4 min-[390px]:px-4 [&::-webkit-scrollbar]:hidden">
                 {popularSearches.map((suggestion) => (
                   <button
                     key={suggestion}
@@ -180,7 +180,7 @@ export function MenuSearchOverlay({
                       onSearchTermChange(suggestion);
                       inputRef.current?.focus();
                     }}
-                    className="shrink-0 rounded-full border border-border bg-card px-4 py-2.5 text-xs font-black text-foreground transition hover:border-primary/30 hover:bg-muted"
+                    className="min-h-11 shrink-0 snap-start rounded-full border border-border bg-card px-4 py-2.5 text-xs font-black text-foreground transition hover:border-primary/30 hover:bg-muted"
                   >
                     {suggestion}
                   </button>
@@ -190,7 +190,7 @@ export function MenuSearchOverlay({
           )}
 
           <div className="mt-7 flex items-center gap-3">
-            <h3 className="shrink-0 text-[11px] font-black uppercase tracking-[0.18em] text-muted-foreground">
+            <h3 className="min-w-0 truncate text-[11px] font-black uppercase tracking-[0.14em] text-muted-foreground min-[390px]:tracking-[0.18em]">
               {searchTerm.trim()
                 ? `Dishes relevant for '${searchTerm.trim()}'`
                 : "Popular dishes"}
@@ -204,9 +204,9 @@ export function MenuSearchOverlay({
                 key={item.id}
                 type="button"
                 onClick={() => onSelect(item)}
-                className="group flex w-full items-center gap-3 py-4 text-left transition active:scale-[0.99] sm:gap-4"
+                className="group grid w-full min-w-0 grid-cols-[72px_minmax(0,1fr)_40px] items-center gap-3 py-4 text-left transition active:scale-[0.99] min-[390px]:grid-cols-[76px_minmax(0,1fr)_40px] sm:grid-cols-[96px_minmax(0,1fr)_44px] sm:gap-4"
               >
-                <span className="relative h-[76px] w-[76px] shrink-0 overflow-hidden rounded-2xl border border-border bg-muted sm:h-24 sm:w-24">
+                <span className="relative h-[72px] w-[72px] overflow-hidden rounded-2xl border border-border bg-muted min-[390px]:h-[76px] min-[390px]:w-[76px] sm:h-24 sm:w-24">
                   <Image
                     src={item.image || "/images/placeholder.jpg"}
                     alt=""
@@ -216,16 +216,18 @@ export function MenuSearchOverlay({
                   />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[15px] font-black sm:text-lg">{item.name}</span>
+                  <span className="line-clamp-2 block text-[14px] font-black leading-tight min-[390px]:text-[15px] sm:text-lg">{item.name}</span>
                   <span className="mt-1 block truncate text-xs font-semibold text-muted-foreground sm:text-sm">
                     {item.category} · {item.available ? `₹${item.price}` : "Out of stock"}
                   </span>
-                  <span className="mt-1.5 flex items-center gap-1 text-[11px] font-bold text-muted-foreground">
+                  <span className="mt-1.5 flex min-w-0 items-center gap-1 text-[10px] font-bold text-muted-foreground min-[390px]:text-[11px]">
                     <Star
                       size={12}
                       className={item.reviews > 0 ? "fill-[#D84315] text-[#D84315]" : "text-muted-foreground"}
                     />
-                    {item.reviews > 0 ? `${item.rating} · ${item.reviews} verified reviews` : "New dish"}
+                    <span className="truncate">
+                      {item.reviews > 0 ? `${item.rating} · ${item.reviews} reviews` : "New dish"}
+                    </span>
                   </span>
                 </span>
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border text-muted-foreground transition group-hover:border-primary/30 group-hover:bg-primary group-hover:text-primary-foreground">

@@ -5,7 +5,8 @@ import { Order } from "../models/Order";
 import { DeliveryPerson } from "../models/DeliveryPerson";
 import {
   assignLocalOrderDelivery,
-  createLocalOrder,
+  createLocalOrderIdempotently,
+  findLocalOrderByIdempotency,
   getLocalOrder,
   listLocalOrders,
   updateLocalOrderStatus,
@@ -23,17 +24,21 @@ import {
   outsideDeliveryMessage
 } from "../services/deliveryZoneService";
 import {
-  claimLegacyOrderTracking,
-  createOrderTrackingToken,
   findOrderForTracking,
   getEstimatedDeliveryAt,
   hashOrderTrackingToken,
   orderTrackingRoom,
   toPublicOrderTracking,
-  trackingClaimSchema,
   trackingCredentialsSchema,
   withoutOrderTrackingSecret
 } from "../services/orderTrackingService";
+import {
+  createIdempotentOrderTrackingToken,
+  fingerprintOrderRequest,
+  hashOrderIdempotencyKey,
+  IdempotencyConflictError,
+  orderIdempotencyKeySchema
+} from "../services/orderIdempotencyService";
 import {
   getCommerceSettings,
   orderQuoteSchema,
@@ -41,6 +46,10 @@ import {
   pricingOrderItemSchema,
   quoteOrderPricing
 } from "../services/orderPricingService";
+import {
+  getAllowedNextOrderStatuses,
+  orderStatusValues
+} from "../services/orderStatusWorkflow";
 import { createInAppNotification } from "../services/inAppNotificationService";
 import {
   initiateRazorpayRefund,
@@ -81,9 +90,7 @@ const createOrderSchema = z.object({
   deliveryFee: z.coerce.number().finite().min(0).optional(),
   discount: z.coerce.number().finite().min(0).optional(),
   couponCode: z.string().trim().max(30).optional(),
-  paymentMethod: z.enum(["cash_on_delivery", "razorpay"]).optional(),
-  paymentStatus: z.enum(["pending", "paid", "failed"]).optional(),
-  razorpayOrderId: z.string().trim().max(200).optional(),
+  paymentMethod: z.literal("cash_on_delivery").optional(),
   orderType: z.enum(["delivery", "dine_in"]).default("delivery"),
   tableToken: z.string().trim().regex(/^[A-Za-z0-9_-]{16,128}$/).optional(),
   customerName: z.string().trim().min(1).max(200).optional(),
@@ -112,18 +119,7 @@ const createOrderSchema = z.object({
 });
 
 const orderStatusSchema = z.object({
-  status: z.enum([
-    "pending",
-    "placed",
-    "accepted",
-    "preparing",
-    "ready",
-    "ready_for_pickup",
-    "out_for_delivery",
-    "served",
-    "delivered",
-    "cancelled"
-  ]),
+  status: z.enum(orderStatusValues),
   email: z.string().trim().email().optional()
 });
 
@@ -131,53 +127,10 @@ const assignDeliverySchema = z.object({
   deliveryPersonId: z.string().trim().min(1).max(200)
 });
 
-const deliveryStatusTransitions: Record<string, readonly string[]> = {
-  pending: ["placed", "preparing", "cancelled"],
-  placed: ["accepted", "preparing", "cancelled"],
-  accepted: ["preparing", "cancelled"],
-  preparing: ["ready", "ready_for_pickup", "cancelled"],
-  ready: ["out_for_delivery", "cancelled"],
-  ready_for_pickup: ["out_for_delivery", "cancelled"],
-  out_for_delivery: ["delivered"],
-  delivered: [],
-  cancelled: []
-};
-
-const dineInStatusTransitions: Record<string, readonly string[]> = {
-  pending: ["accepted", "preparing", "cancelled"],
-  placed: ["accepted", "preparing", "cancelled"],
-  accepted: ["preparing", "cancelled"],
-  preparing: ["ready", "ready_for_pickup", "cancelled"],
-  ready: ["served"],
-  ready_for_pickup: ["served"],
-  served: [],
-  cancelled: []
-};
-
-const kitchenStatusTransitions: Record<string, readonly string[]> = {
-  pending: ["preparing"],
-  placed: ["preparing"],
-  accepted: ["preparing"],
-  preparing: ["ready", "ready_for_pickup"],
-  ready: [],
-  ready_for_pickup: [],
-  out_for_delivery: [],
-  delivered: [],
-  served: [],
-  cancelled: []
-};
-
-function allowedNextStatuses(
-  currentStatus: string,
-  orderType: "delivery" | "dine_in",
-  role: "admin" | "kitchen"
-) {
-  if (role === "kitchen") return kitchenStatusTransitions[currentStatus] ?? [];
-  const transitions = orderType === "dine_in"
-    ? dineInStatusTransitions
-    : deliveryStatusTransitions;
-  return transitions[currentStatus] ?? [];
-}
+const cancelOrderSchema = z.object({
+  reason: z.string().trim().max(500).optional(),
+  trackingToken: z.string().trim().min(32).max(128).optional()
+});
 
 function isMongoConnected() {
   return Order.db.readyState === 1;
@@ -251,6 +204,62 @@ export async function createOrder(req: Request, res: Response) {
     return res.status(400).json({ message: "Invalid order details", errors: parsed.error.flatten() });
   }
 
+  const parsedIdempotencyKey = orderIdempotencyKeySchema.safeParse(
+    req.header("Idempotency-Key")
+  );
+  if (!parsedIdempotencyKey.success) {
+    return res.status(400).json({
+      message:
+        "A valid Idempotency-Key header is required for order creation"
+    });
+  }
+
+  const customerId = req.user?.id;
+  if (!customerId) {
+    return res.status(401).json({ message: "Customer authentication required" });
+  }
+
+  const idempotencyKey = parsedIdempotencyKey.data;
+  const idempotencyKeyHash = hashOrderIdempotencyKey(
+    customerId,
+    idempotencyKey
+  );
+  const idempotencyRequestHash = fingerprintOrderRequest(
+    customerId,
+    parsed.data
+  );
+  const trackingToken = createIdempotentOrderTrackingToken(
+    customerId,
+    idempotencyKey
+  );
+
+  const existingOrder = isMongoConnected()
+    ? await Order.findOne({
+        customer: customerId,
+        idempotencyKeyHash
+      }).select("+idempotencyKeyHash +idempotencyRequestHash")
+    : await findLocalOrderByIdempotency(customerId, idempotencyKeyHash);
+
+  if (existingOrder) {
+    if (
+      String(
+        (existingOrder as unknown as { idempotencyRequestHash?: string })
+          .idempotencyRequestHash ?? ""
+      ) !== idempotencyRequestHash
+    ) {
+      return res.status(409).json({
+        message:
+          "This checkout key was already used with different order details"
+      });
+    }
+
+    res.setHeader("Idempotency-Replayed", "true");
+    return res.status(200).json({
+      ...withoutOrderTrackingSecret(existingOrder),
+      trackingToken
+    });
+  }
+
   const settings = await getCommerceSettings();
   if (!settings.restaurantOpen) {
     return res.status(503).json({
@@ -258,15 +267,9 @@ export async function createOrder(req: Request, res: Response) {
     });
   }
   const paymentMethod = parsed.data.paymentMethod ?? "cash_on_delivery";
-  if (
-    (paymentMethod === "cash_on_delivery" && !settings.cashEnabled) ||
-    (paymentMethod === "razorpay" && !settings.onlinePaymentEnabled)
-  ) {
+  if (!settings.cashEnabled) {
     return res.status(409).json({
-      message:
-        paymentMethod === "cash_on_delivery"
-          ? "Cash payments are currently unavailable."
-          : "Online payments are currently unavailable."
+      message: "Cash payments are currently unavailable."
     });
   }
 
@@ -337,13 +340,8 @@ export async function createOrder(req: Request, res: Response) {
     });
   }
 
-  const status = paymentMethod === "razorpay"
-    ? "pending"
-    : orderInput.orderType === "dine_in"
-      ? "pending"
-      : "placed";
+  const status = orderInput.orderType === "dine_in" ? "pending" : "placed";
   const createdAt = new Date();
-  const trackingToken = createOrderTrackingToken();
   const orderData = {
     orderNumber: createOrderNumber(),
     status,
@@ -363,9 +361,8 @@ export async function createOrder(req: Request, res: Response) {
     couponCode: quote.coupon?.applied ? quote.coupon.code : undefined,
     paymentMethod,
     paymentStatus: "pending" as const,
-    razorpayOrderId: orderInput.razorpayOrderId,
     orderType: orderInput.orderType,
-    customer: req.user?.id,
+    customer: customerId,
     phone: orderInput.phone,
     customerPhoneNormalized: normalizePhone(orderInput.phone),
     email: orderInput.email,
@@ -374,6 +371,8 @@ export async function createOrder(req: Request, res: Response) {
     table: table?.id,
     tableNumber: table ? String(table.tableNumber) : undefined,
     trackingTokenHash: hashOrderTrackingToken(trackingToken),
+    idempotencyKeyHash,
+    idempotencyRequestHash,
     estimatedDeliveryAt: getEstimatedDeliveryAt(
       status,
       orderInput.orderType,
@@ -391,9 +390,60 @@ export async function createOrder(req: Request, res: Response) {
         ? Number(deliveryDistanceKm?.toFixed(3))
         : undefined
   };
-  const order = isMongoConnected()
-    ? await Order.create(orderData)
-    : await createLocalOrder(orderData);
+  let order;
+  let replayed = false;
+  try {
+    if (isMongoConnected()) {
+      order = await Order.create(orderData);
+    } else {
+      const localResult = await createLocalOrderIdempotently(orderData);
+      order = localResult.order;
+      replayed = localResult.replayed;
+    }
+  } catch (error) {
+    if (error instanceof IdempotencyConflictError) {
+      return res.status(409).json({ message: error.message });
+    }
+
+    const duplicateKeyError = error as {
+      code?: number;
+      keyPattern?: Record<string, number>;
+    };
+    if (duplicateKeyError?.code === 11000) {
+      const concurrentOrder = await Order.findOne({
+        customer: customerId,
+        idempotencyKeyHash
+      }).select("+idempotencyKeyHash +idempotencyRequestHash");
+
+      if (concurrentOrder) {
+        const concurrentRequestHash = String(
+          (concurrentOrder as unknown as {
+            idempotencyRequestHash?: string;
+          }).idempotencyRequestHash ?? ""
+        );
+        if (concurrentRequestHash !== idempotencyRequestHash) {
+          return res.status(409).json({
+            message:
+              "This checkout key was already used with different order details"
+          });
+        }
+        order = concurrentOrder;
+        replayed = true;
+      } else {
+        throw error;
+      }
+    } else {
+      throw error;
+    }
+  }
+
+  if (replayed) {
+    res.setHeader("Idempotency-Replayed", "true");
+    return res.status(200).json({
+      ...withoutOrderTrackingSecret(order),
+      trackingToken
+    });
+  }
 
   const io = req.app.get("io");
   await createInAppNotification(
@@ -471,26 +521,6 @@ export async function getOrderTracking(req: Request, res: Response) {
   return res.json(toPublicOrderTracking(order));
 }
 
-export async function claimOrderTracking(req: Request, res: Response) {
-  const orderNumber = Array.isArray(req.params.id)
-    ? req.params.id[0]
-    : req.params.id;
-  const parsed = trackingClaimSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ message: "Enter the order phone number" });
-  }
-
-  const claimed = await claimLegacyOrderTracking(
-    orderNumber,
-    parsed.data.phone
-  );
-  if (!claimed) {
-    return res.status(404).json({ message: "Order tracking was not found" });
-  }
-
-  return res.json(claimed);
-}
-
 export async function updateOrderStatus(req: Request, res: Response) {
   const orderId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const parsed = orderStatusSchema.safeParse(req.body);
@@ -522,8 +552,21 @@ export async function updateOrderStatus(req: Request, res: Response) {
   const requestedStatus = parsed.data.status;
   if (currentStatus === requestedStatus) return res.json(existingOrder);
   const role = req.user?.role === "kitchen" ? "kitchen" : "admin";
-  const allowedStatuses = allowedNextStatuses(currentStatus, orderType, role);
+  const allowedStatuses = getAllowedNextOrderStatuses(
+    currentStatus,
+    orderType,
+    role
+  );
   if (!allowedStatuses.includes(requestedStatus)) {
+    console.warn("Rejected invalid order status transition", {
+      requestId: res.locals.requestId,
+      orderId,
+      orderType,
+      role,
+      currentStatus,
+      requestedStatus,
+      allowedStatuses
+    });
     return res.status(409).json({
       message: `${role === "kitchen" ? "Kitchen staff" : "Administrators"} cannot move a ${orderType.replace("_", "-")} order from ${currentStatus.replace(/_/g, " ")} to ${requestedStatus.replace(/_/g, " ")}`,
       currentStatus,
@@ -623,6 +666,12 @@ export async function updateOrderStatus(req: Request, res: Response) {
   }
 
   if (!order) {
+    console.warn("Order status update lost an optimistic concurrency race", {
+      requestId: res.locals.requestId,
+      orderId,
+      currentStatus,
+      requestedStatus
+    });
     return res.status(409).json({
       message: "Order status changed before this update completed. Refresh and try again."
     });
@@ -656,7 +705,7 @@ export async function updateOrderStatus(req: Request, res: Response) {
 
   const customerId = orderCustomerId(order);
   if (customerId) {
-    await createInAppNotification(
+    void createInAppNotification(
       {
         audience: "customer",
         recipient: customerId,
@@ -668,20 +717,31 @@ export async function updateOrderStatus(req: Request, res: Response) {
         dedupeKey: `customer:${customerId}:order-status:${trackingUpdate.orderNumber}:${trackingUpdate.status}`
       },
       io
-    );
+    ).catch((error) => {
+      console.warn("Order status changed, but the in-app notification failed.", error);
+    });
   }
 
-  try {
-    await sendOrderEmail(parsed.data.email ?? "customer@example.com", "Al-Arab order update", `<p>Status: ${order.status}</p>`);
-  } catch (error) {
-    console.warn("Order status changed, but the email notification failed.", error);
+  const orderEmail = (order as unknown as { email?: string }).email ?? parsed.data.email;
+  if (orderEmail) {
+    void sendOrderEmail(
+      orderEmail,
+      "Al-Arab order update",
+      `<p>Status: ${order.status}</p>`
+    ).catch((error) => {
+      console.warn("Order status changed, but the email notification failed.", error);
+    });
   }
   return res.json(order);
 }
 
 export async function cancelOrder(req: Request, res: Response) {
   const orderId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const { reason, trackingToken } = req.body;
+  const parsed = cancelOrderSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Invalid cancellation details" });
+  }
+  const { reason, trackingToken } = parsed.data;
 
   const existingOrder = isMongoConnected()
     ? mongoose.Types.ObjectId.isValid(orderId)
@@ -705,8 +765,11 @@ export async function cancelOrder(req: Request, res: Response) {
       if (!trackingToken) {
         return res.status(401).json({ message: "Tracking token is required to cancel this order" });
       }
-      const hashedInput = hashOrderTrackingToken(trackingToken);
-      if (existingOrder.trackingTokenHash !== hashedInput) {
+      const trackedOrder = await findOrderForTracking(
+        existingOrder.orderNumber,
+        trackingToken
+      );
+      if (!trackedOrder) {
         return res.status(403).json({ message: "Invalid tracking token" });
       }
     }
@@ -737,7 +800,7 @@ export async function cancelOrder(req: Request, res: Response) {
   if (isMongoConnected()) {
     const statusHistoryUpdate = { status: "cancelled", at: now };
     updatedOrder = await Order.findOneAndUpdate(
-      { _id: existingOrder._id },
+      { _id: existingOrder._id, status: { $in: allowedStatuses } },
       {
         $set: {
           status: "cancelled",
@@ -792,7 +855,9 @@ export async function cancelOrder(req: Request, res: Response) {
   }
 
   if (!updatedOrder) {
-    return res.status(500).json({ message: "Failed to update order" });
+    return res.status(409).json({
+      message: "Order status changed before cancellation completed. Refresh and try again."
+    });
   }
 
   const trackingUpdate = toPublicOrderTracking(updatedOrder);

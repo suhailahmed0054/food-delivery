@@ -22,7 +22,6 @@ import {
   type SupportIssue
 } from "@/lib/api";
 import { parseSavedOrders, type SavedOrder } from "@/lib/saved-orders";
-import { Customer3DNav } from "@/components/Customer3DNav";
 
 function money(value: number) {
   return `Rs ${value.toLocaleString("en-IN")}`;
@@ -558,7 +557,6 @@ export default function SupportPage() {
         </div>
       </div>
 
-      <Customer3DNav />
     </main>
   );
 }

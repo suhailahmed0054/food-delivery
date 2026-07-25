@@ -15,16 +15,22 @@ const FALLBACK_MENU_IMAGE =
 const menuImageSchema = z
   .string()
   .trim()
-  .url("Dish image must be an HTTPS URL")
   .max(2048)
-  .refine((value) => value.startsWith("https://"), "Dish image must use HTTPS")
   .refine((value) => {
+    if (
+      !env.isProduction &&
+      /^\/uploads\/menu\/[a-zA-Z0-9._-]+\.(jpe?g|png|webp)$/.test(value)
+    ) {
+      return true;
+    }
+
     try {
-      return env.menuImageHosts.includes(new URL(value).hostname.toLowerCase());
+      const url = new URL(value);
+      return url.protocol === "https:" && env.menuImageHosts.includes(url.hostname.toLowerCase());
     } catch {
       return false;
     }
-  }, "Dish image host is not approved");
+  }, "Upload a dish photo or use an approved HTTPS image URL");
 
 const menuItemSchema = z.object({
   name: z.string().trim().min(1),
@@ -55,8 +61,15 @@ function routeId(req: Request) {
 
 function publicMenuItem<T extends object>(item: T): T & { image: string } {
   const image = (item as { image?: unknown }).image;
+  const itemId = (item as { id?: unknown; _id?: unknown }).id ?? (item as { _id?: unknown })._id;
   let approvedImage = false;
-  if (typeof image === "string" && image.startsWith("https://")) {
+  if (
+    !env.isProduction &&
+    typeof image === "string" &&
+    image.startsWith("/uploads/menu/")
+  ) {
+    approvedImage = /^\/uploads\/menu\/[a-zA-Z0-9._-]+\.(jpe?g|png|webp)$/.test(image);
+  } else if (typeof image === "string" && image.startsWith("https://")) {
     try {
       approvedImage = env.menuImageHosts.includes(new URL(image).hostname.toLowerCase());
     } catch {
@@ -65,6 +78,7 @@ function publicMenuItem<T extends object>(item: T): T & { image: string } {
   }
   return {
     ...item,
+    ...(itemId ? { id: String(itemId) } : {}),
     image: approvedImage ? image as string : FALLBACK_MENU_IMAGE
   };
 }

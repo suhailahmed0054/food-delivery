@@ -1,20 +1,14 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import { z } from "zod";
-import { env } from "../config/env";
 import { Order } from "../models/Order";
 import {
   assignLocalOrderCustomer,
-  getLocalOrder,
-  setLocalOrderTracking
+  getLocalOrder
 } from "./localOrderStore";
 
 export const trackingCredentialsSchema = z.object({
   orderNumber: z.string().trim().regex(/^[A-Za-z0-9-]{4,64}$/),
   trackingToken: z.string().trim().min(32).max(128)
-});
-
-export const trackingClaimSchema = z.object({
-  phone: z.string().trim().min(7).max(30)
 });
 
 export type PublicOrderTracking = {
@@ -81,10 +75,6 @@ function toIsoString(value: unknown) {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-function normalizePhone(value: unknown) {
-  return typeof value === "string" ? value.replace(/\D/g, "") : "";
-}
-
 function hashesMatch(first: string, second: string) {
   const firstBuffer = Buffer.from(first, "hex");
   const secondBuffer = Buffer.from(second, "hex");
@@ -100,15 +90,6 @@ export function createOrderTrackingToken() {
 
 export function hashOrderTrackingToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
-}
-
-function createLegacyOrderTrackingToken(
-  orderNumber: string,
-  normalizedPhone: string
-) {
-  return createHmac("sha256", env.jwtAccessSecret)
-    .update(`${orderNumber}:${normalizedPhone}`)
-    .digest("base64url");
 }
 
 export function getEstimatedDeliveryAt(
@@ -144,6 +125,8 @@ export function getEstimatedDeliveryAt(
 export function withoutOrderTrackingSecret(order: unknown) {
   const plain = toPlainOrder(order);
   delete plain.trackingTokenHash;
+  delete plain.idempotencyKeyHash;
+  delete plain.idempotencyRequestHash;
   return plain;
 }
 
@@ -269,70 +252,4 @@ export async function attachTrackedOrderToCustomer(
     { new: true }
   ).select("_id");
   return Boolean(order);
-}
-
-export async function claimLegacyOrderTracking(
-  orderNumber: string,
-  phone: string
-) {
-  const normalizedPhone = normalizePhone(phone);
-  if (!normalizedPhone) return null;
-
-  const trackingToken = createLegacyOrderTrackingToken(
-    orderNumber,
-    normalizedPhone
-  );
-  const trackingTokenHash = hashOrderTrackingToken(trackingToken);
-
-  if (Order.db.readyState !== 1) {
-    const order = await getLocalOrder(orderNumber);
-    if (!order || normalizePhone(order.phone) !== normalizedPhone) return null;
-    if (
-      order.trackingTokenHash &&
-      !hashesMatch(order.trackingTokenHash, trackingTokenHash)
-    ) {
-      return null;
-    }
-
-    const estimatedDeliveryAt =
-      order.estimatedDeliveryAt ??
-      getEstimatedDeliveryAt(
-        order.status,
-        order.orderType,
-        new Date(order.updatedAt)
-      );
-    const updated = await setLocalOrderTracking(
-      orderNumber,
-      trackingTokenHash,
-      estimatedDeliveryAt
-    );
-    return updated
-      ? { trackingToken, order: toPublicOrderTracking(updated) }
-      : null;
-  }
-
-  const order = await Order.findOne({ orderNumber }).select("+trackingTokenHash");
-  if (!order || normalizePhone(order.phone) !== normalizedPhone) return null;
-  if (
-    order.trackingTokenHash &&
-    !hashesMatch(order.trackingTokenHash, trackingTokenHash)
-  ) {
-    return null;
-  }
-
-  order.trackingTokenHash = trackingTokenHash;
-  if (!order.statusHistory?.length) {
-    order.statusHistory = [{ status: order.status, at: order.createdAt }];
-  }
-  if (!order.estimatedDeliveryAt) {
-    const estimate = getEstimatedDeliveryAt(
-      order.status,
-      order.orderType,
-      order.updatedAt
-    );
-    order.estimatedDeliveryAt = estimate ? new Date(estimate) : undefined;
-  }
-  await order.save();
-
-  return { trackingToken, order: toPublicOrderTracking(order) };
 }

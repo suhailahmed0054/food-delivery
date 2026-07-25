@@ -14,6 +14,7 @@ jobs:
     timeout-minutes: 5
     env:
       DEPLOYMENT_WEB_URL: ${{ secrets.PRODUCTION_WEB_URL }}
+      DEPLOYMENT_ADMIN_URL: ${{ secrets.PRODUCTION_ADMIN_URL }}
       DEPLOYMENT_API_URL: ${{ secrets.PRODUCTION_API_URL }}
       UPTIME_ALERT_WEBHOOK_URL: ${{ secrets.UPTIME_ALERT_WEBHOOK_URL }}
     steps:

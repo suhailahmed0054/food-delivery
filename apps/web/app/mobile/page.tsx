@@ -33,6 +33,7 @@ import {
 import { useWishlistStore } from "@/store/wishlist-store";
 import { useCustomer3DReveal } from "@/lib/use-customer-3d-reveal";
 import { useRouter } from "next/navigation";
+import { getCheckoutLoginPath } from "@/lib/auth-navigation";
 import {
   Menu,
   ShoppingCart,
@@ -363,6 +364,7 @@ export default function MobileHome() {
   const [menuReviews, setMenuReviews] = useState<CustomerReview[]>([]);
   const [isReviewsLoading, setIsReviewsLoading] = useState(false);
   const [reviewsError, setReviewsError] = useState("");
+  const [isCheckoutAuthLoading, setIsCheckoutAuthLoading] = useState(false);
 
   const profileDrawerRef = useRef<HTMLElement | null>(null);
   const profileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -386,6 +388,22 @@ export default function MobileHome() {
   // Animated cart total
   const rawTotal = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
   const animatedTotal = useAnimatedNumber(rawTotal);
+
+  const proceedToCheckout = async () => {
+    if (isCheckoutAuthLoading) return;
+
+    const checkoutPath = getCheckoutPath();
+    triggerHaptic("heavy");
+    setIsCheckoutAuthLoading(true);
+    try {
+      await fetchCustomerAccount();
+      router.push(checkoutPath);
+    } catch {
+      router.push(getCheckoutLoginPath(checkoutPath));
+    } finally {
+      setIsCheckoutAuthLoading(false);
+    }
+  };
 
   const openDishReviews = async (item: MenuItem) => {
     setReviewsItem(item);
@@ -622,7 +640,7 @@ export default function MobileHome() {
   }
 
   return (
-    <main className="mobile-liquid-page customer-3d-page min-h-screen overflow-x-clip bg-[#050505] text-foreground selection:bg-primary/30 pb-safe">
+    <main className="mobile-liquid-page customer-3d-page min-h-screen w-full max-w-full overflow-x-hidden bg-[#050505] text-foreground selection:bg-primary/30 pb-safe">
       <Suspense fallback={null}>
         <TableSessionTracker
           onTableChange={setTableSession}
@@ -862,9 +880,9 @@ export default function MobileHome() {
       {/* ═══════════════════════════════════════════════
           iOS LIQUID GLASS — STICKY HEADER
           ═══════════════════════════════════════════════ */}
-      <header className="liquid-mobile-header sticky top-0 z-40 border-b border-white/5 bg-black/50 backdrop-blur-2xl supports-[backdrop-filter]:bg-black/40">
-        <div className="relative flex items-center justify-between px-4 py-3">
-          <div className="flex shrink-0 justify-start">
+      <header className="liquid-mobile-header sticky top-0 z-40 w-full border-b border-white/5 bg-black/50 backdrop-blur-2xl supports-[backdrop-filter]:bg-black/40">
+        <div className="mobile-header-inner grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1 px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] min-[390px]:gap-2 min-[390px]:px-4">
+          <div className="flex min-w-0 justify-start">
             <button
               ref={profileMenuButtonRef}
               type="button"
@@ -878,26 +896,26 @@ export default function MobileHome() {
             </button>
           </div>
 
-          <div className="pointer-events-none absolute left-1/2 flex -translate-x-1/2 flex-col items-center justify-center">
+          <div className="mobile-header-brand pointer-events-none flex min-w-0 flex-col items-center justify-center">
             <Image
               src="/images/logo-watermark.png"
               alt="Al-Arab"
-              width={52}
-              height={52}
-              className="h-10 w-auto object-contain drop-shadow-lg"
+              width={44}
+              height={44}
+              className="h-7 w-auto object-contain drop-shadow-lg min-[390px]:h-8"
             />
-            <p className="font-logo text-[10px] font-bold tracking-[0.3em] text-primary mt-0.5 leading-none">
+            <p className="mt-0.5 whitespace-nowrap font-logo text-[8px] font-bold leading-none tracking-[0.18em] text-primary min-[390px]:text-[9px]">
               AL-ARAB
             </p>
           </div>
 
-          <div className="flex shrink-0 justify-end gap-1 min-[390px]:gap-2">
+          <div className="flex min-w-0 justify-end gap-0.5 min-[390px]:gap-1">
             <button
               type="button"
               aria-label="Search menu"
               aria-expanded={showSearch}
               onClick={() => setShowSearch(true)}
-              className="liquid-icon-button relative flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/80 transition hover:bg-white/10 hover:text-white active:scale-95 min-[390px]:h-10 min-[390px]:w-10"
+              className="liquid-icon-button relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/80 transition hover:bg-white/10 hover:text-white active:scale-95"
             >
               <Search size={19} strokeWidth={2.5} aria-hidden="true" />
               {searchTerm.trim() && (
@@ -907,13 +925,13 @@ export default function MobileHome() {
             <NotificationCenter
               scope="customer"
               enabled={Boolean(customerSummary)}
-              className="!h-9 !w-9 min-[390px]:!h-10 min-[390px]:!w-10"
+              className="!h-9 !w-9 !shrink-0"
             />
             <button
               type="button"
               aria-label="Open cart"
               onClick={() => setShowCart(true)}
-              className="liquid-icon-button relative flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/80 transition hover:bg-white/10 hover:text-white active:scale-95 min-[390px]:h-10 min-[390px]:w-10"
+              className="liquid-icon-button relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/80 transition hover:bg-white/10 hover:text-white active:scale-95"
             >
               <ShoppingCart size={22} strokeWidth={2.5} />
               {items.length > 0 && (
@@ -959,21 +977,21 @@ export default function MobileHome() {
           iOS SEGMENTED CONTROL — Order Type
           ═══════════════════════════════════════════════ */}
       {!isTableLoading && (
-        <section aria-label="Choose order type" className="mx-4 mb-2 mt-4">
+        <section aria-label="Choose order type" className="mx-3 mb-2 mt-3 min-[390px]:mx-4 min-[390px]:mt-4">
           <div className="liquid-segmented rounded-[18px] border border-white/10 bg-white/[0.03] backdrop-blur-md p-1 shadow-sm">
             <div className="grid grid-cols-2 gap-1">
               <button
                 type="button"
                 aria-pressed={!tableSession}
                 onClick={switchToDelivery}
-                className={`liquid-segment flex min-h-[56px] min-w-0 items-center gap-2.5 rounded-[14px] px-3 text-left transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 ${
+                className={`liquid-segment mobile-order-type-button flex min-h-[56px] min-w-0 items-center gap-2 rounded-[14px] px-2.5 text-left transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 min-[390px]:gap-2.5 min-[390px]:px-3 ${
                   !tableSession
                     ? "border border-primary/30 bg-primary/20 backdrop-blur-xl text-primary shadow-[0_4px_16px_rgba(234,179,8,0.2)]"
                     : "border border-transparent text-white/50 hover:bg-white/[0.03] hover:text-white/70"
                 }`}
               >
                 <span
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition ${
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition min-[390px]:h-9 min-[390px]:w-9 ${
                     !tableSession
                       ? "bg-primary/20 text-primary"
                       : "bg-white/5 text-white/60"
@@ -982,7 +1000,7 @@ export default function MobileHome() {
                   <Bike size={17} aria-hidden="true" />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[13px] font-black leading-none">
+                  <span className="block whitespace-nowrap text-[12px] font-black leading-none min-[390px]:text-[13px]">
                     Delivery
                   </span>
                   <span
@@ -999,14 +1017,14 @@ export default function MobileHome() {
                 type="button"
                 aria-pressed={Boolean(tableSession)}
                 onClick={() => setShowDineInScanner(true)}
-                className={`liquid-segment flex min-h-[56px] min-w-0 items-center gap-2.5 rounded-[14px] px-3 text-left transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 ${
+                className={`liquid-segment mobile-order-type-button flex min-h-[56px] min-w-0 items-center gap-2 rounded-[14px] px-2.5 text-left transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 min-[390px]:gap-2.5 min-[390px]:px-3 ${
                   tableSession
                     ? "border border-primary/30 bg-primary/20 backdrop-blur-xl text-primary shadow-[0_4px_16px_rgba(234,179,8,0.2)]"
                     : "border border-transparent text-white/50 hover:bg-white/[0.03] hover:text-white/70"
                 }`}
               >
                 <span
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition ${
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition min-[390px]:h-9 min-[390px]:w-9 ${
                     tableSession
                       ? "bg-primary/20 text-primary"
                       : "bg-white/5 text-white/60"
@@ -1015,7 +1033,7 @@ export default function MobileHome() {
                   <QrCode size={17} aria-hidden="true" />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[13px] font-black leading-none">
+                  <span className="block whitespace-nowrap text-[12px] font-black leading-none min-[390px]:text-[13px]">
                     Dine-in
                   </span>
                   <span
@@ -1035,41 +1053,41 @@ export default function MobileHome() {
       {/* ═══════════════════════════════════════════════
           iOS HERO — LIQUID GLASS COUPON
           ═══════════════════════════════════════════════ */}
-      <section className="liquid-hero relative overflow-hidden">
+      <section className="liquid-hero relative h-[clamp(19rem,82vw,21rem)] w-full overflow-hidden sm:h-[280px]">
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-[#050505] z-10 pointer-events-none" />
         <Image
           src="/images/al-arab-hero.png"
           alt="Hero"
-          width={800}
-          height={600}
-          className="h-[280px] w-full object-cover opacity-50"
+          fill
+          sizes="100vw"
+          className="object-cover object-[68%_center] opacity-50"
           priority
         />
-        <div className="absolute inset-0 z-20 flex flex-col justify-end p-6 pb-8">
+        <div className="absolute inset-0 z-20 flex min-w-0 flex-col justify-end px-4 pb-5 pt-4 min-[390px]:px-5 min-[390px]:pb-6">
           <h1
-            className="font-heading text-[2.75rem] font-bold uppercase leading-[0.9] text-[#fff7df] drop-shadow-lg"
-            style={{ letterSpacing: "0.04em" }}
+            className="max-w-full font-heading text-[clamp(2rem,10vw,2.55rem)] font-bold uppercase leading-[0.88] text-[#fff7df] drop-shadow-lg"
+            style={{ letterSpacing: "0.015em" }}
           >
             AL-ARAB
             <br />
             RESTAURANT
           </h1>
-          <p className="mt-2.5 text-sm text-white/85 font-medium max-w-[280px] drop-shadow-md">
+          <p className="mt-2 max-w-[280px] text-[clamp(0.75rem,3.4vw,0.875rem)] font-medium leading-snug text-white/85 drop-shadow-md">
             Premium mandi, grills, and shawarma.
           </p>
 
-          <TiltCard intensity={8} className="mt-6 w-full max-w-sm cursor-pointer">
+          <TiltCard intensity={8} className="mt-4 w-full max-w-sm cursor-pointer">
             <LiquidGlass
               refraction={12}
               className="liquid-coupon-card w-full rounded-2xl !bg-black/30 !border-white/20 shadow-[0_8px_32px_rgba(0,0,0,0.5)]"
             >
-              <div className="flex items-center justify-between w-full px-5 py-4">
-                <div className="flex flex-col">
+              <div className="mobile-offer-row grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-3.5 py-3.5 min-[390px]:gap-4 min-[390px]:px-5 min-[390px]:py-4">
+                <div className="min-w-0">
                   <span className="text-[10px] font-bold text-white/50 uppercase tracking-wider">
                     Use Code
                   </span>
-                  <div className="flex items-center gap-2.5 mt-1">
-                    <span className="font-black text-primary tracking-wide text-lg">
+                  <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 min-[390px]:gap-2.5">
+                    <span className="whitespace-nowrap text-base font-black tracking-wide text-primary min-[390px]:text-lg">
                       ALARAB10
                     </span>
                     <GlassBadge variant="primary">10% OFF</GlassBadge>
@@ -1081,7 +1099,7 @@ export default function MobileHome() {
                     e.stopPropagation();
                     void handleCopyCoupon();
                   }}
-                  className="liquid-control rounded-xl border border-white/20 bg-white/10 backdrop-blur-md px-5 py-2.5 text-xs font-black text-white shadow-lg hover:bg-white/20 active:scale-95 transition-all"
+                  className="liquid-control flex min-h-11 min-w-16 shrink-0 items-center justify-center rounded-xl border border-white/20 bg-white/10 px-3.5 py-2.5 text-xs font-black text-white shadow-lg backdrop-blur-md transition-all hover:bg-white/20 active:scale-95 min-[390px]:min-w-20 min-[390px]:px-5"
                 >
                   COPY
                 </button>
@@ -1096,11 +1114,11 @@ export default function MobileHome() {
           ═══════════════════════════════════════════════ */}
       <section
         aria-label="Menu categories"
-        className="liquid-category-rail sticky top-[68px] z-30 mt-3 border-y border-white/5 bg-black/50 backdrop-blur-2xl supports-[backdrop-filter]:bg-black/40 sm:mt-4"
+        className="liquid-category-rail sticky z-30 mt-3 w-full border-y border-white/5 bg-black/50 backdrop-blur-2xl supports-[backdrop-filter]:bg-black/40 sm:mt-4"
       >
         <div
           ref={scrollRef}
-          className="mx-auto flex h-[68px] w-full max-w-4xl snap-x snap-mandatory items-center gap-2.5 overflow-x-auto scroll-smooth px-4 py-2.5 [-ms-overflow-style:none] [scrollbar-width:none] sm:justify-center sm:gap-3 sm:px-6 [&::-webkit-scrollbar]:hidden"
+          className="mobile-category-scroller mx-auto flex h-[62px] w-full max-w-4xl snap-x snap-proximity items-center gap-2 overflow-x-auto overscroll-x-contain scroll-smooth px-3 py-2.5 [-ms-overflow-style:none] [scrollbar-width:none] min-[390px]:h-[66px] min-[390px]:gap-2.5 min-[390px]:px-4 sm:justify-center sm:gap-3 sm:px-6 [&::-webkit-scrollbar]:hidden"
         >
           {["All", "Mains", "Appetizers", "Desserts", "Beverages"].map(
             (category) => {
@@ -1120,7 +1138,7 @@ export default function MobileHome() {
                       inline: "center"
                     });
                   }}
-                  className={`liquid-pill h-[42px] min-w-[92px] shrink-0 snap-center whitespace-nowrap rounded-full px-5 text-[12px] font-black transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:min-w-[112px] sm:px-6 sm:text-[13px] ${
+                  className={`liquid-pill h-10 min-w-[84px] shrink-0 snap-center whitespace-nowrap rounded-full px-4 text-[12px] font-black transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background min-[390px]:min-w-[92px] min-[390px]:px-5 sm:min-w-[112px] sm:px-6 sm:text-[13px] ${
                     isSelected
                       ? "scale-[1.02] border border-primary/40 bg-primary/20 text-primary shadow-[0_6px_18px_rgba(62,39,35,0.18)]"
                       : "border border-white/10 bg-white/[0.03] text-white/50 hover:-translate-y-0.5 hover:border-white/15 hover:bg-white/[0.06] hover:text-white/70"
@@ -1137,7 +1155,7 @@ export default function MobileHome() {
       {/* ═══════════════════════════════════════════════
           iOS LIQUID GLASS — MENU CARDS
           ═══════════════════════════════════════════════ */}
-      <section id="menu-results" className="scroll-mt-24 px-5 pb-36 pt-7">
+      <section id="menu-results" className="w-full scroll-mt-24 px-3 pb-36 pt-5 min-[390px]:px-5 min-[390px]:pt-7">
         {searchTerm.trim() && (
           <p
             role="status"
@@ -1180,10 +1198,10 @@ export default function MobileHome() {
                   refraction={10}
                   className="liquid-menu-card w-full rounded-[1.25rem] !bg-[#111111]/40 !border-white/5 hover:!border-primary/30 transition-all duration-300"
                 >
-                  <div className="flex flex-row items-stretch w-full gap-3 sm:gap-4 p-3 sm:p-4">
+                  <div className="mobile-menu-card-layout flex w-full min-w-0 flex-row items-stretch gap-3 p-3 sm:gap-4 sm:p-4">
                     {/* Image Section */}
                     <div
-                      className="liquid-image-frame relative h-28 w-28 sm:h-32 sm:w-32 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-black shadow-2xl"
+                      className="liquid-image-frame mobile-menu-card-image relative min-h-[148px] w-[clamp(6.25rem,30vw,7.5rem)] shrink-0 self-stretch overflow-hidden rounded-xl border border-white/10 bg-black shadow-2xl sm:min-h-32 sm:w-32"
                       style={{ transform: "translateZ(20px)" }}
                     >
                       <Image
@@ -1208,12 +1226,12 @@ export default function MobileHome() {
 
                     {/* Content Section */}
                     <div
-                      className="flex flex-1 flex-col justify-between min-w-0"
+                      className="mobile-menu-card-content flex min-h-[148px] min-w-0 flex-1 flex-col justify-between"
                       style={{ transform: "translateZ(30px)" }}
                     >
                       <div>
                         <div className="flex items-start justify-between gap-2">
-                          <h3 className="text-sm sm:text-base font-bold leading-tight text-white drop-shadow-md truncate">
+                           <h3 className="line-clamp-2 min-w-0 text-sm font-bold leading-tight text-white drop-shadow-md sm:text-base">
                             {item.name}
                           </h3>
                           <button
@@ -1259,29 +1277,31 @@ export default function MobileHome() {
                         <p className="mt-1 text-lg sm:text-xl font-black text-white drop-shadow-md">
                           ₹{item.price}
                         </p>
-                        <p className="mt-1 text-[10px] sm:text-xs text-white/50 mix-blend-overlay line-clamp-2 leading-relaxed">
+                         <p className="mobile-menu-description mt-1 line-clamp-2 min-h-[2.5rem] text-[10px] leading-relaxed text-white/50 mix-blend-overlay sm:text-xs">
                           {item.description}
                         </p>
                       </div>
 
                       {/* Bottom Row */}
-                      <div className="mt-3 flex items-center justify-between gap-2">
+                       <div className="mobile-menu-card-actions mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
                         <button
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
                             void openDishReviews(item);
                           }}
-                          className="flex shrink-0 items-center gap-1 text-[10px] font-bold text-white/35 mix-blend-overlay transition hover:text-white/70 sm:text-[11px]"
+                           className="flex min-h-11 min-w-0 items-center gap-1 overflow-hidden text-[10px] font-bold text-white/35 mix-blend-overlay transition hover:text-white/70 sm:text-[11px]"
                           aria-label={`Read verified reviews for ${item.name}`}
                         >
                           <Star
                             size={11}
                             className={`text-primary mix-blend-normal ${item.reviews > 0 ? "fill-primary" : ""}`}
                           />
-                          {item.reviews > 0
-                            ? `${item.rating} · ${item.reviews} verified`
-                            : "New"}
+                           <span className="truncate">
+                             {item.reviews > 0
+                               ? `${item.rating} (${item.reviews})`
+                               : "New"}
+                           </span>
                         </button>
 
                         {item.available &&
@@ -1295,7 +1315,7 @@ export default function MobileHome() {
                                     triggerHaptic("medium");
                                     setPortionPickerItem(item);
                                   }}
-                                  className="liquid-action liquid-action-gold relative h-8 sm:h-9 px-3 rounded-xl border border-primary/40 bg-primary/20 text-[9px] sm:text-[10px] font-black text-primary backdrop-blur-xl transition-all hover:bg-primary/30 shadow-[0_4px_12px_rgba(234,179,8,0.15)] active:scale-95 whitespace-nowrap"
+                                  className="liquid-action liquid-action-gold relative flex min-h-11 min-w-24 shrink-0 items-center justify-center whitespace-nowrap rounded-xl border border-primary/40 bg-primary/20 px-3 text-[9px] font-black text-primary shadow-[0_4px_12px_rgba(234,179,8,0.15)] backdrop-blur-xl transition-all hover:bg-primary/30 active:scale-95 sm:min-w-28 sm:text-[10px]"
                                 >
                                   {itemQuantity > 0
                                     ? `${itemQuantity} IN CART`
@@ -1313,7 +1333,7 @@ export default function MobileHome() {
                                     triggerHaptic("medium");
                                     handleAddItem(item);
                                   }}
-                                  className="liquid-action relative h-8 sm:h-9 px-4 flex items-center justify-center rounded-xl border border-white/30 bg-white/10 text-[10px] sm:text-xs font-black text-white backdrop-blur-xl transition-all hover:bg-white/20 hover:border-white/50 shadow-[0_4px_16px_rgba(0,0,0,0.3)] active:scale-95 whitespace-nowrap"
+                                  className="liquid-action relative flex min-h-11 min-w-20 shrink-0 items-center justify-center whitespace-nowrap rounded-xl border border-white/30 bg-white/10 px-3 text-[10px] font-black text-white shadow-[0_4px_16px_rgba(0,0,0,0.3)] backdrop-blur-xl transition-all hover:border-white/50 hover:bg-white/20 active:scale-95 sm:min-w-24 sm:px-4 sm:text-xs"
                                 >
                                   ADD <Plus size={12} className="ml-1 inline" />
                                 </button>
@@ -1322,7 +1342,7 @@ export default function MobileHome() {
 
                             return (
                               <div
-                                className="liquid-stepper flex h-8 sm:h-9 items-center rounded-xl border border-primary/40 bg-primary/20 backdrop-blur-xl shadow-[0_4px_12px_rgba(234,179,8,0.15)]"
+                                className="liquid-stepper flex min-h-11 shrink-0 items-center rounded-xl border border-primary/40 bg-primary/20 shadow-[0_4px_12px_rgba(234,179,8,0.15)] backdrop-blur-xl"
                                 onClick={(e) => e.stopPropagation()}
                               >
                                 <button
@@ -1333,11 +1353,11 @@ export default function MobileHome() {
                                       singleSizeCartItem.quantity - 1
                                     )
                                   }
-                                  className="flex h-full w-8 sm:w-9 items-center justify-center rounded-l-xl text-primary transition hover:bg-primary/30 active:scale-90"
+                                  className="flex min-h-11 w-10 items-center justify-center rounded-l-xl text-primary transition hover:bg-primary/30 active:scale-90 sm:w-11"
                                 >
                                   <Minus size={12} strokeWidth={3} />
                                 </button>
-                                <span className="w-5 sm:w-6 text-center font-black text-xs sm:text-sm text-white drop-shadow-md">
+                                <span className="w-5 text-center text-xs font-black text-white drop-shadow-md sm:w-6 sm:text-sm">
                                   {singleSizeCartItem.quantity}
                                 </span>
                                 <button
@@ -1348,7 +1368,7 @@ export default function MobileHome() {
                                       singleSizeCartItem.quantity + 1
                                     )
                                   }
-                                  className="flex h-full w-8 sm:w-9 items-center justify-center rounded-r-xl text-primary transition hover:bg-primary/30 active:scale-90"
+                                  className="flex min-h-11 w-10 items-center justify-center rounded-r-xl text-primary transition hover:bg-primary/30 active:scale-90 sm:w-11"
                                 >
                                   <Plus size={12} strokeWidth={3} />
                                 </button>
@@ -1406,7 +1426,7 @@ export default function MobileHome() {
           iOS FLOATING CART BAR
           ═══════════════════════════════════════════════ */}
       {items.length > 0 && (
-        <div className="fixed bottom-6 left-4 right-4 z-40 animate-in slide-in-from-bottom-10">
+        <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] left-3 right-3 z-40 animate-in slide-in-from-bottom-10 min-[390px]:left-4 min-[390px]:right-4">
           <LiquidGlass
             refraction={10}
             className="liquid-floating-cart w-full rounded-[1.25rem] !bg-black/60 !border-white/20 hover:!border-primary/50 transition-colors shadow-[0_10px_40px_rgba(0,0,0,0.5)] cursor-pointer"
@@ -1810,13 +1830,11 @@ export default function MobileHome() {
                   </span>
                 </div>
                 <button
-                  onClick={() => {
-                    triggerHaptic("heavy");
-                    router.push(getCheckoutPath());
-                  }}
+                  onClick={() => void proceedToCheckout()}
+                  disabled={isCheckoutAuthLoading}
                   className="liquid-action liquid-action-gold min-h-12 w-full rounded-2xl border border-primary/40 bg-primary/20 px-4 py-3 text-sm font-black text-primary shadow-[0_8px_32px_rgba(234,179,8,0.2)] backdrop-blur-2xl transition-all hover:bg-primary/30 active:scale-[0.98] sm:text-base"
                 >
-                  Proceed to Checkout
+                  {isCheckoutAuthLoading ? "Checking account..." : "Proceed to Checkout"}
                 </button>
               </div>
             )}

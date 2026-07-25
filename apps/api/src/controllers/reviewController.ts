@@ -5,7 +5,7 @@ import { MenuItem } from "../models/MenuItem";
 import { Order } from "../models/Order";
 import { Review } from "../models/Review";
 import { getLocalOrder } from "../services/localOrderStore";
-import { updateLocalMenuRatings } from "../services/localMenuStore";
+import { listLocalMenu, updateLocalMenuRatings } from "../services/localMenuStore";
 import {
   getLocalReviewAggregates,
   listLocalReviews,
@@ -28,6 +28,16 @@ const submitReviewSchema = z.object({
 const reviewCredentialsSchema = z.object({
   orderNumber: z.string().trim().regex(/^[A-Za-z0-9-]{4,64}$/),
   trackingToken: z.string().trim().min(32).max(128).optional()
+});
+
+const adminReviewQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(12),
+  search: z.string().trim().max(100).default(""),
+  rating: z.preprocess(
+    (value) => value === "" || value === undefined ? undefined : value,
+    z.coerce.number().int().min(1).max(5).optional()
+  )
 });
 
 type ReviewableOrder = {
@@ -73,6 +83,23 @@ function publicReview(review: ReviewRecord) {
     createdAt: review.createdAt,
     updatedAt: review.updatedAt
   };
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function populatedText(value: unknown, field: "name" | "orderNumber") {
+  if (!value || typeof value !== "object" || !(field in value)) return "";
+  const text = (value as Record<string, unknown>)[field];
+  return typeof text === "string" ? text : "";
+}
+
+function populatedId(value: unknown) {
+  if (value && typeof value === "object" && "_id" in value) {
+    return String((value as { _id: unknown })._id);
+  }
+  return String(value ?? "");
 }
 
 async function findOwnedOrder(
@@ -229,10 +256,7 @@ export async function submitOrderReviews(req: Request, res: Response) {
 export async function listOrderReviews(req: Request, res: Response) {
   const parsed = reviewCredentialsSchema.safeParse({
     orderNumber: routeId(req),
-    trackingToken:
-      typeof req.query.trackingToken === "string"
-        ? req.query.trackingToken
-        : undefined
+    trackingToken: req.header("x-order-tracking-token")
   });
   if (!parsed.success) {
     return res.status(400).json({ message: "Invalid review details" });
@@ -270,4 +294,108 @@ export async function listMenuItemReviews(req: Request, res: Response) {
         .slice(0, 50);
 
   return res.json(reviews.map((review) => publicReview(review)));
+}
+
+export async function listAdminReviews(req: Request, res: Response) {
+  const parsed = adminReviewQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({
+      message: "Invalid review filters",
+      errors: parsed.error.flatten()
+    });
+  }
+
+  const { page, limit, rating, search } = parsed.data;
+  const skip = (page - 1) * limit;
+
+  if (Review.db.readyState === 1) {
+    const filter: Record<string, unknown> = {};
+    if (rating) filter.rating = rating;
+
+    if (search) {
+      const pattern = new RegExp(escapeRegex(search), "i");
+      const [matchingOrders, matchingMenuItems] = await Promise.all([
+        Order.find({ orderNumber: pattern }).select({ _id: 1 }).lean(),
+        MenuItem.find({ name: pattern }).select({ _id: 1 }).lean()
+      ]);
+      filter.$or = [
+        { customerName: pattern },
+        { comment: pattern },
+        { order: { $in: matchingOrders.map((order) => order._id) } },
+        { menuItem: { $in: matchingMenuItems.map((item) => item._id) } }
+      ];
+    }
+
+    const [reviews, total] = await Promise.all([
+      Review.find(filter)
+        .populate({ path: "order", select: "orderNumber" })
+        .populate({ path: "menuItem", select: "name" })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Review.countDocuments(filter)
+    ]);
+
+    return res.json({
+      reviews: reviews.map((review) => ({
+        id: String(review._id),
+        orderNumber: populatedText(review.order, "orderNumber"),
+        menuItem: populatedId(review.menuItem),
+        menuItemName: populatedText(review.menuItem, "name") || "Deleted dish",
+        customerName: review.customerName?.trim() || "Verified customer",
+        rating: review.rating,
+        comment: review.comment ?? "",
+        createdAt: review.createdAt,
+        updatedAt: review.updatedAt
+      })),
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.max(1, Math.ceil(total / limit))
+      }
+    });
+  }
+
+  const [reviews, menu] = await Promise.all([
+    listLocalReviews(),
+    listLocalMenu()
+  ]);
+  const menuNames = new Map(menu.map((item) => [item.id, item.name]));
+  const normalizedSearch = search.toLowerCase();
+  const filtered = reviews
+    .filter((review) => !rating || review.rating === rating)
+    .filter((review) => {
+      if (!normalizedSearch) return true;
+      const menuName = menuNames.get(review.menuItem) ?? "";
+      return [
+        review.customerName,
+        review.comment,
+        review.orderNumber,
+        menuName
+      ].some((value) => value.toLowerCase().includes(normalizedSearch));
+    })
+    .sort((first, second) => second.createdAt.localeCompare(first.createdAt));
+  const total = filtered.length;
+
+  return res.json({
+    reviews: filtered.slice(skip, skip + limit).map((review) => ({
+      id: review.id,
+      orderNumber: review.orderNumber,
+      menuItem: review.menuItem,
+      menuItemName: menuNames.get(review.menuItem) ?? "Deleted dish",
+      customerName: review.customerName || "Verified customer",
+      rating: review.rating,
+      comment: review.comment,
+      createdAt: review.createdAt,
+      updatedAt: review.updatedAt
+    })),
+    pagination: {
+      page,
+      limit,
+      total,
+      pages: Math.max(1, Math.ceil(total / limit))
+    }
+  });
 }

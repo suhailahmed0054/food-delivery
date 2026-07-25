@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 
@@ -29,6 +29,13 @@ export const metadata: Metadata = {
   title: "Al-Arab Restaurant | Premium Dining",
   description:
     "Authentic Arabic food delivery, online ordering, live order tracking and admin tools.",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#f8f3ee",
 };
 
 export default function RootLayout({

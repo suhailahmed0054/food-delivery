@@ -59,6 +59,18 @@ const orderSchema = new Schema(
       select: false,
       index: true
     },
+    idempotencyKeyHash: {
+      type: String,
+      minlength: 64,
+      maxlength: 64,
+      select: false
+    },
+    idempotencyRequestHash: {
+      type: String,
+      minlength: 64,
+      maxlength: 64,
+      select: false
+    },
     estimatedDeliveryAt: Date,
     statusHistory: [
       {
@@ -86,5 +98,16 @@ orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ customer: 1, createdAt: -1 });
 orderSchema.index({ razorpayOrderId: 1 }, { sparse: true });
 orderSchema.index({ razorpayPaymentId: 1 }, { sparse: true });
+orderSchema.index(
+  { customer: 1, idempotencyKeyHash: 1 },
+  {
+    unique: true,
+    name: "unique_customer_order_idempotency",
+    partialFilterExpression: {
+      customer: { $exists: true },
+      idempotencyKeyHash: { $type: "string" }
+    }
+  }
+);
 
 export const Order = mongoose.models.Order || mongoose.model("Order", orderSchema);

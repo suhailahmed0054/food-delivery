@@ -21,6 +21,13 @@ export function accountRateLimitKey(req: Request) {
   return `${normalizedIp(req)}:${accountHash}`;
 }
 
+export function emailRateLimitKey(req: Request) {
+  const email = typeof req.body?.email === "string"
+    ? req.body.email.trim().toLowerCase()
+    : "unknown";
+  return createHash("sha256").update(email).digest("hex").slice(0, 24);
+}
+
 export function rateLimit(
   maxRequests = 120,
   windowMs = 60_000,

@@ -1,3 +1,4 @@
+import "./config/mongoDns";
 import http from "http";
 import crypto from "crypto";
 import mongoose from "mongoose";
@@ -21,6 +22,7 @@ import { accountRouter } from "./routes/accountRoutes";
 import { supportRouter } from "./routes/supportRoutes";
 import { reviewRouter } from "./routes/reviewRoutes";
 import { notificationRouter } from "./routes/notificationRoutes";
+import { uploadRouter } from "./routes/uploadRoutes";
 import { rateLimit } from "./middleware/rateLimit";
 import {
   connectRedis,
@@ -49,6 +51,31 @@ const app = express();
 const server = http.createServer(app);
 app.set("trust proxy", env.trustProxyHops);
 
+const sensitiveQueryParameters = new Set([
+  "authorizationCode",
+  "refreshToken",
+  "token",
+  "trackingToken"
+]);
+
+morgan.token("safe-url", (request) => {
+  const originalUrl =
+    "originalUrl" in request && typeof request.originalUrl === "string"
+      ? request.originalUrl
+      : request.url ?? "/";
+  try {
+    const parsed = new URL(originalUrl, "http://local");
+    for (const name of sensitiveQueryParameters) {
+      if (parsed.searchParams.has(name)) {
+        parsed.searchParams.set(name, "[REDACTED]");
+      }
+    }
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return originalUrl.split("?")[0];
+  }
+});
+
 function isAllowedLocalOrigin(origin: string) {
   if (process.env.NODE_ENV === "production") return false;
 
@@ -73,7 +100,9 @@ function isAllowedLocalOrigin(origin: string) {
 }
 
 function isAllowedCorsOrigin(origin?: string) {
-  return !origin || origin === env.clientUrl || isAllowedLocalOrigin(origin);
+  return !origin ||
+    env.allowedClientOrigins.includes(origin) ||
+    isAllowedLocalOrigin(origin);
 }
 
 const corsOrigin: CorsOptions["origin"] = (origin, callback) => {
@@ -97,22 +126,22 @@ app.use((req, res, next) => {
   next();
 });
 app.use(morgan(env.isProduction
-  ? ':date[iso] :method :url :status :response-time ms request-id=:res[x-request-id]'
-  : "dev"));
+  ? ':date[iso] :method :safe-url :status :response-time ms request-id=:res[x-request-id]'
+  : ':method :safe-url :status :response-time ms'));
 app.use(rateLimit(120, 60_000, "global"));
 app.use("/api", (_req, res, next) => {
   res.set("Cache-Control", "no-store");
   next();
 });
 app.use("/api/support", express.json({ limit: "6mb" }));
-app.use(express.json({
-  limit: "1mb",
+app.use("/api/uploads", express.json({ limit: "5mb" }));
+app.use("/api/payments/webhook", express.json({
+  limit: "256kb",
   verify: (req, _res, buffer) => {
-    if ((req as Request).originalUrl === "/api/payments/webhook") {
-      (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
-    }
+    (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
   }
 }));
+app.use(express.json({ limit: "1mb" }));
 app.use((error: Error & { status?: number; type?: string }, _req: Request, res: Response, next: NextFunction) => {
   if (error.type === "entity.too.large") {
     return res.status(413).json({ message: "Request body is too large" });
@@ -126,8 +155,13 @@ app.use((error: Error & { status?: number; type?: string }, _req: Request, res: 
 });
 function readinessStatus() {
   const database = isDatabaseConnected() ? "connected" : "disconnected";
-  const redis = isRedisConnected() ? "connected" : "disconnected";
-  const ready = !env.isProduction || (database === "connected" && redis === "connected");
+  const redis = !env.redisUrl
+    ? "disabled"
+    : isRedisConnected()
+      ? "connected"
+      : "disconnected";
+  const ready = !env.isProduction ||
+    (database === "connected" && redis !== "disconnected");
   return { database, redis, ready };
 }
 
@@ -167,6 +201,7 @@ app.use("/api/settings", settingsRouter);
 app.use("/api/support", supportRouter);
 app.use("/api/reviews", reviewRouter);
 app.use("/api/notifications", notificationRouter);
+app.use("/api/uploads", uploadRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ message: "Route not found" });
@@ -311,10 +346,16 @@ io.on("connection", (socket) => {
 });
 
 async function startServer() {
-  await connectRedis();
-  await connectDatabase();
+  const redisConnected = await connectRedis();
+  const databaseConnected = await connectDatabase();
+  if (
+    env.isProduction &&
+    (!databaseConnected || (Boolean(env.redisUrl) && !redisConnected))
+  ) {
+    throw new Error("Production dependencies are not ready");
+  }
   server.listen(env.port, () => {
-    console.log(`API running on http://localhost:${env.port}`);
+    console.log(`API running on port ${env.port}`);
   });
 }
 
@@ -364,8 +405,9 @@ process.on("uncaughtException", (error) => {
   }).finally(() => process.exit(1));
 });
 
-void startServer().catch((error: unknown) => {
+void startServer().catch(async (error: unknown) => {
   const message = error instanceof Error ? error.message : "Unknown startup error";
   console.error(`API startup failed: ${message}`);
-  process.exitCode = 1;
+  await Promise.allSettled([disconnectRedis(), mongoose.disconnect()]);
+  process.exit(1);
 });

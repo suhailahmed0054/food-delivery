@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "fs/promises";
 import path from "path";
 import { writeJsonFileAtomic } from "./localFileStore";
+import { IdempotencyConflictError } from "./orderIdempotencyService";
 
 export type LocalOrder = {
   id: string;
@@ -42,6 +43,8 @@ export type LocalOrder = {
   deliveryTime?: string;
   specialInstructions?: string;
   trackingTokenHash?: string;
+  idempotencyKeyHash?: string;
+  idempotencyRequestHash?: string;
   estimatedDeliveryAt?: string;
   statusHistory?: Array<{
     status: string;
@@ -69,26 +72,58 @@ export type LocalOrderInput = Omit<LocalOrder, "id" | "createdAt" | "updatedAt">
 
 const dataDir = path.resolve(__dirname, "../../data");
 const dataFile = path.join(dataDir, "orders.json");
+const mutationQueues = new Map<string, Promise<void>>();
 
-async function ensureStore() {
-  await mkdir(dataDir, { recursive: true });
+function currentDataFile() {
+  const override = process.env.LOCAL_ORDER_DATA_FILE?.trim();
+  return override ? path.resolve(override) : dataFile;
+}
+
+async function ensureStore(storeFile = currentDataFile()) {
+  await mkdir(path.dirname(storeFile), { recursive: true });
   try {
-    await readFile(dataFile, "utf8");
+    await readFile(storeFile, "utf8");
   } catch {
-    await writeJsonFileAtomic(dataFile, []);
+    await writeJsonFileAtomic(storeFile, []);
   }
 }
 
-async function writeLocalOrders(orders: LocalOrder[]) {
-  await ensureStore();
-  await writeJsonFileAtomic(dataFile, orders);
+async function writeLocalOrders(
+  orders: LocalOrder[],
+  storeFile = currentDataFile()
+) {
+  await ensureStore(storeFile);
+  await writeJsonFileAtomic(storeFile, orders);
 }
 
-export async function listLocalOrders() {
-  await ensureStore();
+async function withOrderMutation<T>(
+  storeFile: string,
+  operation: () => Promise<T>
+) {
+  const previous = mutationQueues.get(storeFile) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.then(() => current);
+  mutationQueues.set(storeFile, queued);
+
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (mutationQueues.get(storeFile) === queued) {
+      mutationQueues.delete(storeFile);
+    }
+  }
+}
+
+export async function listLocalOrders(storeFile = currentDataFile()) {
+  await ensureStore(storeFile);
 
   try {
-    const parsed = JSON.parse(await readFile(dataFile, "utf8")) as unknown;
+    const parsed = JSON.parse(await readFile(storeFile, "utf8")) as unknown;
     if (!Array.isArray(parsed)) return [];
     return (parsed as LocalOrder[]).map((order) =>
       (order as unknown as { refundStatus?: string }).refundStatus === "simulated"
@@ -124,6 +159,54 @@ export async function createLocalOrder(input: LocalOrderInput) {
   return order;
 }
 
+export async function findLocalOrderByIdempotency(
+  customer: string,
+  idempotencyKeyHash: string,
+  storeFile = currentDataFile()
+) {
+  const orders = await listLocalOrders(storeFile);
+  return orders.find(
+    (order) =>
+      order.customer === customer &&
+      order.idempotencyKeyHash === idempotencyKeyHash
+  ) ?? null;
+}
+
+export async function createLocalOrderIdempotently(
+  input: LocalOrderInput & {
+    customer: string;
+    idempotencyKeyHash: string;
+    idempotencyRequestHash: string;
+  },
+  storeFile = currentDataFile()
+) {
+  return withOrderMutation(storeFile, async () => {
+    const orders = await listLocalOrders(storeFile);
+    const existing = orders.find(
+      (order) =>
+        order.customer === input.customer &&
+        order.idempotencyKeyHash === input.idempotencyKeyHash
+    );
+
+    if (existing) {
+      if (existing.idempotencyRequestHash !== input.idempotencyRequestHash) {
+        throw new IdempotencyConflictError();
+      }
+      return { order: existing, replayed: true };
+    }
+
+    const now = new Date().toISOString();
+    const order: LocalOrder = {
+      ...input,
+      id: input.orderNumber,
+      createdAt: now,
+      updatedAt: now
+    };
+    await writeLocalOrders([order, ...orders].slice(0, 500), storeFile);
+    return { order, replayed: false };
+  });
+}
+
 export async function updateLocalOrderStatus(
   id: string,
   status: string,
@@ -157,32 +240,6 @@ export async function updateLocalOrderStatus(
       : undefined
   };
   orders[index] = nextOrder;
-  await writeLocalOrders(orders);
-  return orders[index];
-}
-
-export async function setLocalOrderTracking(
-  id: string,
-  trackingTokenHash: string,
-  estimatedDeliveryAt?: string
-) {
-  const orders = await listLocalOrders();
-  const index = orders.findIndex(
-    (order) => order.id === id || order.orderNumber === id
-  );
-  if (index === -1) return null;
-
-  const currentOrder = orders[index];
-  orders[index] = {
-    ...currentOrder,
-    trackingTokenHash,
-    estimatedDeliveryAt,
-    statusHistory:
-      currentOrder.statusHistory?.length
-        ? currentOrder.statusHistory
-        : [{ status: currentOrder.status, at: currentOrder.createdAt }],
-    updatedAt: new Date().toISOString()
-  };
   await writeLocalOrders(orders);
   return orders[index];
 }

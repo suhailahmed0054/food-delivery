@@ -1,7 +1,6 @@
 import { Router } from "express";
 import {
   addCustomerAddress,
-  changeCustomerPassword,
   claimCustomerOrders,
   deleteCustomerAddress,
   getCustomerAccount,
@@ -21,6 +20,5 @@ accountRouter.put("/profile", asyncHandler(updateCustomerProfile));
 accountRouter.post("/addresses", asyncHandler(addCustomerAddress));
 accountRouter.delete("/addresses/:id", asyncHandler(deleteCustomerAddress));
 accountRouter.put("/notifications", asyncHandler(updateCustomerNotifications));
-accountRouter.put("/password", rateLimit(5, 15 * 60_000, "password-change"), asyncHandler(changeCustomerPassword));
 accountRouter.get("/orders", asyncHandler(listCustomerOrders));
 accountRouter.post("/orders/claim", rateLimit(10, 15 * 60_000, "orders-claim"), asyncHandler(claimCustomerOrders));

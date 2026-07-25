@@ -7,7 +7,14 @@ const compatibility = new FlatCompat({ baseDirectory: currentDirectory });
 
 const eslintConfig = [
   {
-    ignores: [".next/**", "node_modules/**", "next-env.d.ts", "tsconfig.tsbuildinfo"],
+    ignores: [
+      ".next/**",
+      ".next-dev/**",
+      "android/**",
+      "node_modules/**",
+      "next-env.d.ts",
+      "tsconfig.tsbuildinfo",
+    ],
   },
   ...compatibility.extends("next/core-web-vitals", "next/typescript"),
 ];

@@ -251,6 +251,8 @@ export type ApiOrder = {
   discount?: number;
   couponCode?: string;
   status: string;
+  cancelledBy?: "customer" | "admin";
+  cancelReason?: string;
   paymentMethod?: "cash_on_delivery" | "razorpay";
   paymentStatus?: "pending" | "paid" | "failed" | "refunded";
   refundStatus?: "pending" | "processed" | "failed";
@@ -370,11 +372,6 @@ export type ApiOrderTracking = {
   updatedAt: string;
 };
 
-export type ClaimedOrderTracking = {
-  trackingToken: string;
-  order: ApiOrderTracking;
-};
-
 export type SupportIssue = {
   id: string;
   _id?: string;
@@ -421,6 +418,23 @@ export type CustomerReview = {
   updatedAt?: string;
 };
 
+export type AdminReview = {
+  id: string;
+  orderNumber: string;
+  menuItem: string;
+  menuItemName: string;
+  customerName: string;
+  rating: number;
+  comment: string;
+  createdAt: string;
+  updatedAt?: string;
+};
+
+export type AdminReviewPage = {
+  reviews: AdminReview[];
+  pagination: { page: number; limit: number; total: number; pages: number };
+};
+
 export type SupportMessage = {
   id: string;
   _id?: string;
@@ -440,6 +454,9 @@ async function getApiErrorMessage(response: Response, fallback: string) {
 
   if (contentType.includes("application/json")) {
     const error = await response.json().catch(() => null);
+    if (response.status === 403 && (error?.message ?? error?.error) === "Forbidden") {
+      return "Please sign in again with an admin account.";
+    }
     return error?.message ?? error?.error ?? fallback;
   }
 
@@ -469,7 +486,11 @@ async function requestJson<T>(
 
   let response = await performRequest();
   const isAdminAuthRequest = path.startsWith("/auth/");
-  if (response.status === 401 && !isAdminAuthRequest) {
+  const shouldRefresh =
+    !isAdminAuthRequest &&
+    (response.status === 401 || (authScope === "admin" && response.status === 403));
+
+  if (shouldRefresh) {
     const refreshed = await fetch(`${getApiBaseUrl()}/auth/refresh`, {
       method: "POST",
       credentials: "include",
@@ -495,11 +516,18 @@ function getAuthHeaders(): Record<string, string> {
   return {};
 }
 
-export async function loginAccount(email: string, password: string) {
-  return requestJson<AuthResponse>("/auth/login", {
+export async function requestCustomerEmailOtp(email: string) {
+  return requestJson<{ message: string; resendAfterSeconds: number }>("/auth/send-otp", {
     method: "POST",
-    body: JSON.stringify({ email, password })
-  }, "Unable to sign in");
+    body: JSON.stringify({ email })
+  }, "We couldn't send the code. Please try again.", "customer");
+}
+
+export async function verifyCustomerEmailOtp(email: string, otp: string) {
+  return requestJson<AuthResponse>("/auth/verify-otp", {
+    method: "POST",
+    body: JSON.stringify({ email, otp })
+  }, "The code is incorrect or expired.", "customer");
 }
 
 export async function loginAdmin(email: string, password: string) {
@@ -557,13 +585,6 @@ export async function logoutAdmin() {
   }
 }
 
-export async function registerAccount(name: string, email: string, password: string) {
-  return requestJson<AuthResponse>("/auth/register", {
-    method: "POST",
-    body: JSON.stringify({ name, email, password })
-  }, "Unable to create account");
-}
-
 export async function fetchMenu() {
   try {
     const response = await fetch(`${getApiBaseUrl()}/menu`);
@@ -572,7 +593,10 @@ export async function fetchMenu() {
     if (!Array.isArray(data) || data.some((item) => !item.customization?.sizes || !item.customization?.addOns)) {
       return menuItems.map((item) => ({ ...item, rating: 0, reviews: 0 }));
     }
-    return data;
+    return data.map((item) => ({
+      ...item,
+      id: item.id ?? item._id ?? item.name
+    }));
   } catch {
     return menuItems.map((item) => ({ ...item, rating: 0, reviews: 0 }));
   }
@@ -590,6 +614,13 @@ export async function updateMenuItem(id: string, payload: MenuItemPayload) {
     method: "PUT",
     body: JSON.stringify(payload)
   });
+}
+
+export async function uploadMenuImage(fileName: string, dataUrl: string) {
+  return requestJson<{ imageUrl: string }>("/uploads/menu-image", {
+    method: "POST",
+    body: JSON.stringify({ fileName, dataUrl })
+  }, "Unable to upload dish image");
 }
 
 export async function deleteMenuItem(id: string) {
@@ -870,21 +901,6 @@ export async function updateCustomerNotifications(
   );
 }
 
-export async function changeCustomerPassword(
-  currentPassword: string,
-  newPassword: string
-) {
-  return requestJson<void>(
-    "/account/password",
-    {
-      method: "PUT",
-      body: JSON.stringify({ currentPassword, newPassword })
-    },
-    "Unable to change your password",
-    "customer"
-  );
-}
-
 export async function fetchCustomerOrders() {
   return requestJson<ApiOrder[]>(
     "/account/orders",
@@ -909,10 +925,19 @@ export async function claimCustomerOrders(
 }
 
 export async function logoutAccount() {
-  await fetch(`${getApiBaseUrl()}/auth/customer/logout`, {
+  await fetch(`${getApiBaseUrl()}/auth/logout`, {
     method: "POST",
     credentials: "include"
   });
+}
+
+export async function fetchCustomerSession() {
+  return requestJson<AuthResponse>(
+    "/auth/session",
+    { method: "GET" },
+    "Unable to load your session",
+    "customer"
+  );
 }
 
 export async function fetchPublicRestaurantSettings() {
@@ -931,9 +956,13 @@ export async function updateRestaurantSettings(
   }, "Unable to save settings");
 }
 
-export async function createOrder(payload: OrderPayload) {
+export async function createOrder(
+  payload: OrderPayload,
+  idempotencyKey: string
+) {
   return requestJson<ApiOrder>("/orders", {
     method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
     body: JSON.stringify(payload)
   }, "Unable to place the order", "customer");
 }
@@ -960,17 +989,6 @@ export async function fetchOrderTracking(
       body: JSON.stringify({ trackingToken })
     },
     "Unable to refresh order tracking"
-  );
-}
-
-export async function claimOrderTracking(orderNumber: string, phone: string) {
-  return requestJson<ClaimedOrderTracking>(
-    `/orders/${encodeURIComponent(orderNumber)}/tracking/claim`,
-    {
-      method: "POST",
-      body: JSON.stringify({ phone })
-    },
-    "Unable to activate order tracking"
   );
 }
 
@@ -1008,12 +1026,14 @@ export async function fetchOrderReviews(
   orderNumber: string,
   trackingToken?: string
 ) {
-  const query = new URLSearchParams();
-  if (trackingToken) query.set("trackingToken", trackingToken);
-  const suffix = query.size > 0 ? `?${query.toString()}` : "";
   return requestJson<CustomerReview[]>(
-    `/reviews/order/${encodeURIComponent(orderNumber)}${suffix}`,
-    { method: "GET" },
+    `/reviews/order/${encodeURIComponent(orderNumber)}`,
+    {
+      method: "GET",
+      headers: trackingToken
+        ? { "X-Order-Tracking-Token": trackingToken }
+        : undefined
+    },
     "Unable to load your reviews",
     "customer"
   );
@@ -1042,6 +1062,25 @@ export async function fetchMenuItemReviews(menuItemId: string) {
     "Unable to load reviews",
     "customer"
   );
+}
+
+export async function fetchAdminReviews(filters: {
+  page?: number;
+  limit?: number;
+  rating?: number;
+  search?: string;
+} = {}) {
+  const query = new URLSearchParams();
+  if (filters.page) query.set("page", String(filters.page));
+  if (filters.limit) query.set("limit", String(filters.limit));
+  if (filters.rating) query.set("rating", String(filters.rating));
+  if (filters.search) query.set("search", filters.search);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+
+  return requestJson<AdminReviewPage>(`/reviews/admin${suffix}`, {
+    method: "GET",
+    headers: getAuthHeaders()
+  }, "Unable to load customer reviews");
 }
 
 export async function reportOrderIssue(payload: {
