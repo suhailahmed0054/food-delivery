@@ -370,14 +370,14 @@ recorded.
 
 ### Dependency audit change after Phase 1
 
-The full audit on 25 July 2026 reports a newly published high-severity
+The full audit, reconfirmed on 30 July 2026, reports a newly published high-severity
 `brace-expansion` denial-of-service advisory in nine transitive,
 development-only ESLint paths:
 
 - full `npm audit --audit-level=high`: **9 high**;
 - runtime `npm audit --omit=dev --audit-level=high`: **0 vulnerabilities**;
-- affected line: `brace-expansion@1.1.16` via `minimatch@3.1.5`;
-- patched `brace-expansion@5.0.8` is already installed for the modern line;
+- affected line: latest compatible `brace-expansion@1.1.18` via `minimatch@3.1.5`;
+- patched `brace-expansion@5.0.9` is installed for the modern line;
 - no patched 1.x or compatible minimatch 3.x release is currently available;
 - npm suggests a forced breaking ESLint downgrade, which was not applied.
 
