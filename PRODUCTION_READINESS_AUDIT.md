@@ -498,8 +498,30 @@ No `import.meta.env` or `VITE_*` usage exists.
 - Strengthened `EMAIL_FROM` validation so production accepts only a valid
   address at the intended Resend-verified restaurant domain or its subdomains.
 - Kept MongoDB, four independent authentication/OTP secrets, Resend, the three
-  planned application URLs, trust-proxy configuration, and Cloudinary mandatory
-  because current production features directly depend on them.
+  planned application URLs, and trust-proxy configuration mandatory. Cloudinary
+  is now an all-or-none optional integration: it is required only when persistent
+  admin menu-image uploads are enabled, and an unconfigured upload returns 503.
+
+### Credential containment update (30 July 2026)
+
+- Removed live-looking Cloudinary values from an uncommitted malformed
+  `render.yaml` working copy and restored the safe `sync: false` declarations.
+- Searched the tracked repository and Git history for non-placeholder
+  Cloudinary assignments. No matching credential was found in committed history,
+  so a history rewrite is not required.
+- Revalidated `render.yaml` as valid YAML and confirmed no tracked secret
+  assignment remains.
+- A broader history scan found an old MongoDB URI with embedded credentials in
+  `apps/api/.env.example`. The URI was blanked from every reachable Git commit,
+  rewrite backup refs/reflogs were removed, and the rewritten `main` history was
+  force-updated. The database password still requires provider-side rotation.
+- Provider-side rotation is required for every credential that appeared in
+  plaintext. Rotate Cloudinary credentials in Cloudinary and the Atlas database
+  password in MongoDB Atlas, then store replacements only in Render's environment
+  dashboard.
+- Added sanitized MongoDB connection diagnostics so the next Render failure can
+  distinguish authentication, DNS, TLS, permissions, and Atlas network/project
+  selection problems without printing the MongoDB URI or password.
 
 ### Verification
 
@@ -518,9 +540,9 @@ No `import.meta.env` or `VITE_*` usage exists.
 The current production verifier no longer fails for intentionally absent Redis,
 alert webhook, admin seed credentials, menu-image override, or Capacitor URL.
 It still correctly reports missing web API URL, access/refresh secrets, three
-planned API-side URLs, Cloudinary credentials, and proxy-hop configuration in
-the current unchecked-in local production environment. Secret values were not
-printed or changed.
+planned API-side URLs, and proxy-hop configuration in the current unchecked-in
+local production environment. It reports partially configured Cloudinary values
+as invalid but permits all three to be absent. Secret values were not printed.
 
 This environment cleanup does not change the Section 19 beta decision. Real
 production configuration, live mobile verification, and a complete controlled

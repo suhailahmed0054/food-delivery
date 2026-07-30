@@ -363,28 +363,17 @@ if (isProduction) {
       "an HTTPS URL with no embedded credentials"
     ));
   }
-  if (!cloudinaryCloudName) {
+  const cloudinaryConfigurationCount = [
+    cloudinaryCloudName,
+    cloudinaryApiKey,
+    cloudinaryApiSecret
+  ].filter(Boolean).length;
+  if (cloudinaryConfigurationCount > 0 && cloudinaryConfigurationCount < 3) {
     errors.push(configurationIssue(
-      "MISSING",
-      "CLOUDINARY_CLOUD_NAME",
-      "PUBLIC",
-      "the Cloudinary cloud name"
-    ));
-  }
-  if (!cloudinaryApiKey) {
-    errors.push(configurationIssue(
-      "MISSING",
-      "CLOUDINARY_API_KEY",
+      "INVALID",
+      "CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET",
       "SECRET",
-      "the Cloudinary API key"
-    ));
-  }
-  if (!cloudinaryApiSecret) {
-    errors.push(configurationIssue(
-      "MISSING",
-      "CLOUDINARY_API_SECRET",
-      "SECRET",
-      "the Cloudinary API secret"
+      "all three Cloudinary values together, or all three empty when menu uploads are disabled"
     ));
   }
   if (!Number.isInteger(trustProxyHops) || trustProxyHops < 1) {

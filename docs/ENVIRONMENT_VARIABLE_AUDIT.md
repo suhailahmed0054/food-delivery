@@ -39,9 +39,9 @@ or changing a supported feature.
 | `RAZORPAY_WEBHOOK_SECRET` | Yes. `paymentController:verifyRazorpayWebhook`. | Conditional with Razorpay integration. | Secret. | Active; no. |
 | `TRUST_PROXY_HOPS` | Yes. `server.ts` passes it to Express `trust proxy`, affecting secure cookies, IPs, and rate limits. | Required positive integer in production; `0` locally. | Private, non-secret. | Active; no. |
 | `MENU_IMAGE_HOSTS` | Yes. `menuController:isApprovedImageUrl` and menu create/update validation. | Optional; defaults to Unsplash and Cloudinary. | Public allow-list. | Active override; safely omit when defaults are correct. |
-| `CLOUDINARY_CLOUD_NAME` | Yes. `cloudinaryService:uploadMenuImageToCloudinary`. | Mandatory for the supported production admin image-upload feature. | Public account identifier. | Active; no. |
-| `CLOUDINARY_API_KEY` | Yes. Same upload function. | Mandatory with the other Cloudinary values. | Secret server credential. | Active; no. |
-| `CLOUDINARY_API_SECRET` | Yes. Signs Cloudinary uploads. | Mandatory with the other Cloudinary values. | Secret. | Active; no. |
+| `CLOUDINARY_CLOUD_NAME` | Yes. `cloudinaryService:uploadMenuImageToCloudinary`. | Optional integration; required with the other two values when admin menu-image upload is enabled. | Public account identifier. | Active; safely omit only when menu uploads are intentionally disabled. |
+| `CLOUDINARY_API_KEY` | Yes. Same upload function. | Optional integration; all three Cloudinary values are validated as a group. | Secret server credential. | Active; safely omit only when menu uploads are intentionally disabled. |
+| `CLOUDINARY_API_SECRET` | Yes. Signs Cloudinary uploads. | Optional integration; all three Cloudinary values are validated as a group. | Secret. | Active; safely omit only when menu uploads are intentionally disabled. |
 | `RELEASE_SHA` | Yes. `env.releaseSha`; health responses and operational alerts. | Optional; falls back to host `RENDER_GIT_COMMIT`, then `development`. | Public build metadata. | Active optional metadata; safely omit on Render. |
 | `SHUTDOWN_TIMEOUT_MS` | Yes. `server.ts:shutdown`. | Optional; defaults to `10000`. | Private, non-secret. | Active override; safely omit. |
 | `ALERT_WEBHOOK_URL` | Yes. `operationalAlertService:reportOperationalAlert`. | Optional. Missing value disables outbound operational alerts and no longer fails production validation. | Secret URL/token. | Active optional integration; safely omit when external alerting is intentionally disabled. |
@@ -166,10 +166,12 @@ OTP_HASH_SECRET=
 RESEND_API_KEY=
 EMAIL_FROM=Al-Arab Restaurant <login@al-arabrestaurant.cc.cd>
 TRUST_PROXY_HOPS=1
-CLOUDINARY_CLOUD_NAME=
-CLOUDINARY_API_KEY=
-CLOUDINARY_API_SECRET=
 ```
+
+To enable persistent admin menu-image uploads, additionally configure
+`CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`
+together. When all three are absent, the API starts normally and the protected
+upload endpoint returns `503 Image uploads are not configured`.
 
 ### Web runtime/build
 

@@ -9,7 +9,7 @@ Create these external services before the first staging deployment:
 - MongoDB Atlas production cluster with network access restricted to the API host.
 - Render Key Value/Redis instance with TLS enabled when running more than one
   API instance or when shared rate-limit counters are required.
-- Cloudinary account for persistent menu image storage.
+- Cloudinary account when persistent admin menu image uploads are enabled.
 - Razorpay live/test accounts only when online payment is enabled. Current
   customer checkout is COD-only.
 - Optional HTTPS alert webhook receiver. Sentry, Better Stack, or a protected
@@ -28,7 +28,9 @@ Enable MongoDB Atlas continuous cloud backups in addition to the daily logical b
 4. Use unique generated values for the access, refresh, authentication, and OTP
    hash secrets. Never reuse the admin password.
 5. Keep `TRUST_PROXY_HOPS=1` for Render unless the proxy chain is deliberately changed.
-6. Set `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` from the Cloudinary API Keys page.
+6. If menu image uploads are enabled, set `CLOUDINARY_CLOUD_NAME`,
+   `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` together from the
+   Cloudinary API Keys page. Never place those values in Git-tracked files.
 7. Seed the first administrator from a protected shell using temporary
    `ADMIN_EMAIL` and `ADMIN_PASSWORD` values:
 
@@ -127,7 +129,8 @@ Then perform one manual order from a real phone over mobile data:
 6. Verify customer notifications, order tracking, review submission, and refund processing.
 7. Complete one COD order and one table QR dine-in order.
 8. Confirm a failed payment cannot mark an order as paid.
-9. Upload a menu photo from Admin, reload the customer menu, and verify the Cloudinary image remains available after redeploying both services.
+9. If Cloudinary is enabled, upload a menu photo from Admin, reload the customer
+   menu, and verify the image remains available after redeploying both services.
 
 ## 7. Backups and restore drill
 

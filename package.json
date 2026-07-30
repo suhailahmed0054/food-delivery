@@ -36,10 +36,10 @@
     "axios": "1.18.1",
     "body-parser": "1.20.6",
     "minimatch@3.1.5": {
-      "brace-expansion": "1.1.16"
+      "brace-expansion": "1.1.18"
     },
     "minimatch@10.2.5": {
-      "brace-expansion": "5.0.7"
+      "brace-expansion": "5.0.9"
     },
     "js-yaml": "4.3.0",
     "postcss": "$postcss",

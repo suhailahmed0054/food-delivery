@@ -31,9 +31,6 @@ OTP_HASH_SECRET=
 RESEND_API_KEY=
 EMAIL_FROM=Al-Arab Restaurant <login@al-arabrestaurant.cc.cd>
 TRUST_PROXY_HOPS=1
-CLOUDINARY_CLOUD_NAME=
-CLOUDINARY_API_KEY=
-CLOUDINARY_API_SECRET=
 ```
 
 Generate every signing/HMAC secret independently. Never expose API, database,
@@ -52,6 +49,10 @@ not required in the normal Vercel web environment.
 
 ## Optional integrations
 
+- `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`,
+  `CLOUDINARY_API_SECRET`: configure all three to enable persistent admin menu
+  image uploads. If all three are omitted, API startup remains available and
+  the upload endpoint reports that storage is not configured.
 - `REDIS_URL`: shared rate-limit counters. Omit only for a single API instance.
 - `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`,
   `RAZORPAY_WEBHOOK_SECRET`: configure all three when online payment is enabled.
