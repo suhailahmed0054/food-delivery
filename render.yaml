@@ -34,11 +34,12 @@ services:
       - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM
-        sync: false
+        value: Al-Arab Restaurant <login@al-arabrestaurant.cc.cd>
       - key: TRUST_PROXY_HOPS
         value: "1"
       - key: MENU_IMAGE_HOSTS
         value: images.unsplash.com,res.cloudinary.com
+      # Optional persistent menu-image uploads: configure all three or none.
       - key: CLOUDINARY_CLOUD_NAME
         sync: false
       - key: CLOUDINARY_API_KEY
