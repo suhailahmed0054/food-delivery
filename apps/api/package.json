@@ -8,9 +8,10 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/otp.test.ts tests/emailService.test.ts tests/emailOtpAuth.test.ts tests/orderStatusWorkflow.test.ts tests/orderIdempotency.test.ts",
+    "test": "tsx --test tests/otp.test.ts tests/emailService.test.ts tests/emailOtpAuth.test.ts tests/orderStatusWorkflow.test.ts tests/orderIdempotency.test.ts tests/orderAuthentication.test.ts",
     "create-admin": "tsx src/scripts/createAdmin.ts",
     "migrate-menu-images": "tsx src/scripts/migrateMenuImages.ts",
+    "migrate-legacy-refunds": "tsx src/scripts/migrateLegacyRefunds.ts",
     "verify-production": "tsx src/scripts/verifyProduction.ts",
     "backup": "tsx src/scripts/backupDatabase.ts",
     "restore": "tsx src/scripts/restoreDatabase.ts"

@@ -198,7 +198,7 @@ export async function submitOrderReviews(req: Request, res: Response) {
   if (!order) {
     return res.status(403).json({ message: "Review access was denied" });
   }
-  if (!['delivered', 'served'].includes(order.status.toLowerCase())) {
+  if (!['delivered', 'served', 'collected', 'completed'].includes(order.status.toLowerCase())) {
     return res.status(409).json({
       message: "You can review this order after it has been delivered or served"
     });

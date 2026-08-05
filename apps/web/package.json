@@ -13,6 +13,7 @@
     "android:sync": "cap sync android",
     "android:dev": "node scripts/capacitor-dev.mjs",
     "android:build": "node scripts/android-build.mjs",
+    "android:release": "node scripts/android-build.mjs --release",
     "android:open": "cap open android"
   },
   "dependencies": {

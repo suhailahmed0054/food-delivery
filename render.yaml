@@ -31,6 +31,8 @@ services:
         generateValue: true
       - key: OTP_HASH_SECRET
         generateValue: true
+      - key: ADMIN_SIGNUP_CODE
+        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM

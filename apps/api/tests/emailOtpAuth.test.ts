@@ -10,6 +10,7 @@ let baseUrl = "";
 let issueEmailOtp: typeof import("../src/services/emailOtpService").issueEmailOtp;
 let resetMemoryEmailOtpStoreForTests: typeof import("../src/services/emailOtpService").resetMemoryEmailOtpStoreForTests;
 let findLocalAccountByEmail: typeof import("../src/services/localAccountStore").findLocalAccountByEmail;
+let User: typeof import("../src/models/User").User;
 
 before(async () => {
   process.env.NODE_ENV = "test";
@@ -17,6 +18,7 @@ before(async () => {
   process.env.OTP_HASH_SECRET = "otp-test-secret-with-at-least-32-characters";
   process.env.RESEND_API_KEY = "";
   process.env.EMAIL_FROM = "";
+  process.env.ADMIN_SIGNUP_CODE = "test-admin-signup-code-with-at-least-32-characters";
   process.env.LOCAL_ACCOUNT_DATA_FILE = path.join(
     await mkdtemp(path.join(tmpdir(), "al-arab-otp-tests-")),
     "customer-accounts.json"
@@ -26,6 +28,7 @@ before(async () => {
   const { authRouter } = await import("../src/routes/authRoutes");
   const otpService = await import("../src/services/emailOtpService");
   const localAccountStore = await import("../src/services/localAccountStore");
+  User = (await import("../src/models/User")).User;
   issueEmailOtp = otpService.issueEmailOtp;
   resetMemoryEmailOtpStoreForTests = otpService.resetMemoryEmailOtpStoreForTests;
   findLocalAccountByEmail = localAccountStore.findLocalAccountByEmail;
@@ -64,6 +67,44 @@ async function verify(email: string, otp: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, otp })
+  });
+}
+
+async function withMockAdminDatabase(
+  options: { existingAdmin?: boolean; existingEmail?: boolean },
+  run: (savedUsers: Array<InstanceType<typeof User>>) => Promise<void>
+) {
+  const connection = User.db as typeof User.db & { _readyState: number };
+  const originalReadyState = connection._readyState;
+  const originalExists = User.exists;
+  const originalSave = User.prototype.save;
+  const savedUsers: Array<InstanceType<typeof User>> = [];
+
+  connection._readyState = 1;
+  User.exists = (async (filter: { role?: string; email?: string }) => {
+    if (filter.role === "admin" && options.existingAdmin) return { _id: "admin-id" };
+    if (filter.email && options.existingEmail) return { _id: "email-id" };
+    return null;
+  }) as typeof User.exists;
+  User.prototype.save = (async function () {
+    savedUsers.push(this as InstanceType<typeof User>);
+    return this;
+  }) as typeof User.prototype.save;
+
+  try {
+    await run(savedUsers);
+  } finally {
+    connection._readyState = originalReadyState;
+    User.exists = originalExists;
+    User.prototype.save = originalSave;
+  }
+}
+
+function registerAdmin(body: Record<string, string>) {
+  return fetch(`${baseUrl}/admin/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
   });
 }
 
@@ -235,7 +276,7 @@ test("OTP email limit applies even when requests come from different IP addresse
   assert.equal(statuses.at(-1), 429);
 });
 
-test("public password signup is disabled while seeded admin login remains", async () => {
+test("public customer password signup is disabled while admin login remains", async () => {
   const customerPasswordLogin = await fetch(`${baseUrl}/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -243,22 +284,130 @@ test("public password signup is disabled while seeded admin login remains", asyn
   });
   assert.equal(customerPasswordLogin.status, 404);
 
-  const adminSignup = await fetch(`${baseUrl}/admin/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name: "Unexpected Admin",
-      email: "unexpected-admin@example.com",
-      password: "not-used",
-      authorizationCode: "not-used"
-    })
-  });
-  assert.equal(adminSignup.status, 404);
-
   const adminLogin = await fetch(`${baseUrl}/admin/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email: "admin@example.com", password: "wrong-password" })
   });
   assert.equal(adminLogin.status, 401);
+});
+
+test("admin registration rejects an incorrect signup code", async () => {
+  await withMockAdminDatabase({}, async (savedUsers) => {
+    const response = await registerAdmin({
+      name: "Primary Administrator",
+      email: "primary@example.com",
+      password: "StrongPassword123!",
+      confirmPassword: "StrongPassword123!",
+      signupCode: "incorrect-private-code"
+    });
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), {
+      message: "Unable to create administrator profile"
+    });
+    assert.equal(savedUsers.length, 0);
+  });
+});
+
+test("correct signup code creates and signs in the first admin", async () => {
+  await withMockAdminDatabase({}, async (savedUsers) => {
+    const response = await registerAdmin({
+      name: "Primary Administrator",
+      email: "  PRIMARY@EXAMPLE.COM ",
+      password: "StrongPassword123!",
+      confirmPassword: "StrongPassword123!",
+      signupCode: process.env.ADMIN_SIGNUP_CODE!
+    });
+    assert.equal(response.status, 201);
+    assert.match(response.headers.get("set-cookie") ?? "", /al-arab-admin-access=/);
+    const body = await response.json() as {
+      user: { email: string; role: string; passwordHash?: string; signupCode?: string };
+    };
+    assert.equal(body.user.email, "primary@example.com");
+    assert.equal(body.user.role, "admin");
+    assert.equal(body.user.passwordHash, undefined);
+    assert.equal(body.user.signupCode, undefined);
+    assert.equal(savedUsers.length, 1);
+    assert.equal(savedUsers[0].get("isPrimaryAdmin"), true);
+    assert.notEqual(savedUsers[0].get("passwordHash"), "StrongPassword123!");
+    assert.equal(
+      await (await import("bcryptjs")).default.compare(
+        "StrongPassword123!",
+        String(savedUsers[0].get("passwordHash"))
+      ),
+      true
+    );
+  });
+});
+
+test("admin registration refuses a second administrator profile", async () => {
+  await withMockAdminDatabase({ existingAdmin: true }, async (savedUsers) => {
+    const response = await registerAdmin({
+      name: "Second Administrator",
+      email: "second@example.com",
+      password: "AnotherPassword123!",
+      confirmPassword: "AnotherPassword123!",
+      signupCode: process.env.ADMIN_SIGNUP_CODE!
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      message: "Administrator profile setup has already been completed"
+    });
+    assert.equal(savedUsers.length, 0);
+  });
+});
+
+test("admin registration refuses an email already used by another account", async () => {
+  await withMockAdminDatabase({ existingEmail: true }, async (savedUsers) => {
+    const response = await registerAdmin({
+      name: "Primary Administrator",
+      email: "existing@example.com",
+      password: "AnotherPassword123!",
+      confirmPassword: "AnotherPassword123!",
+      signupCode: process.env.ADMIN_SIGNUP_CODE!
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      message: "Unable to create administrator profile"
+    });
+    assert.equal(savedUsers.length, 0);
+  });
+});
+
+test("local demo admin session remains valid after login", async () => {
+  const protectedWithoutSession = await fetch(`${baseUrl}/me`);
+  assert.equal(protectedWithoutSession.status, 401);
+
+  const login = await fetch(`${baseUrl}/admin/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: "admin@alarab.local",
+      password: "Admin@123"
+    })
+  });
+  assert.equal(login.status, 200);
+
+  const accessCookie = (login.headers.get("set-cookie") ?? "").match(
+    /al-arab-admin-access=[^;]+/
+  )?.[0];
+  assert.ok(accessCookie);
+
+  const session = await fetch(`${baseUrl}/me`, {
+    headers: { Cookie: accessCookie }
+  });
+  assert.equal(session.status, 200);
+  const body = await session.json() as { user: { id: string; role: string } };
+  assert.equal(body.user.id, "local-admin");
+  assert.equal(body.user.role, "admin");
+
+  const allCookies = login.headers.get("set-cookie") ?? "";
+  const refreshCookie = allCookies.match(/al-arab-admin-refresh=[^;]+/)?.[0];
+  assert.ok(refreshCookie);
+  const logout = await fetch(`${baseUrl}/logout`, {
+    method: "POST",
+    headers: { Cookie: `${accessCookie}; ${refreshCookie}` }
+  });
+  assert.equal(logout.status, 204);
+  assert.match(logout.headers.get("set-cookie") ?? "", /Max-Age=0/);
 });

@@ -7,6 +7,7 @@ const menuItemSchema = new Schema(
     price: { type: Number, required: true },
     description: { type: String, required: true },
     image: { type: String, required: true },
+    imagePublicId: { type: String, select: false },
     rating: { type: Number, default: 0 },
     reviews: { type: Number, default: 0 },
     ingredients: [String],

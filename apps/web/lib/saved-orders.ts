@@ -25,7 +25,7 @@ export type SavedOrder = {
   refundStatus?: "pending" | "processed" | "failed";
   refundAmount?: number;
   razorpayRefundId?: string;
-  orderType: "delivery" | "dine_in";
+  orderType: "delivery" | "takeaway" | "dine_in";
   tableNumber?: string;
   status: string;
   trackingToken?: string;
@@ -53,6 +53,54 @@ export type SavedOrder = {
   total: number;
   createdAt: string;
 };
+
+const TRACKING_TOKEN_SESSION_KEY = "al-arab-order-tracking-tokens";
+
+function readTrackingTokens() {
+  if (typeof window === "undefined") return {} as Record<string, string>;
+  try {
+    const parsed = JSON.parse(
+      window.sessionStorage.getItem(TRACKING_TOKEN_SESSION_KEY) ?? "{}"
+    ) as unknown;
+    return parsed && typeof parsed === "object"
+      ? parsed as Record<string, string>
+      : {};
+  } catch {
+    return {} as Record<string, string>;
+  }
+}
+
+export function saveOrderTrackingToken(orderNumber: string, token?: string) {
+  if (
+    typeof window === "undefined" ||
+    !token ||
+    token.length < 32 ||
+    token.length > 128
+  ) return;
+  const tokens = readTrackingTokens();
+  tokens[orderNumber] = token;
+  window.sessionStorage.setItem(
+    TRACKING_TOKEN_SESSION_KEY,
+    JSON.stringify(tokens)
+  );
+}
+
+export function serializeSavedOrders(orders: SavedOrder[]) {
+  return JSON.stringify(orders.slice(0, 50).map((order) => ({
+    ...order,
+    customer: "",
+    phone: "",
+    email: undefined,
+    address: "",
+    deliveryLatitude: undefined,
+    deliveryLongitude: undefined,
+    instructions: "",
+    trackingToken: undefined,
+    deliveryAgent: order.deliveryAgent
+      ? { name: order.deliveryAgent.name }
+      : undefined
+  })));
+}
 
 function isSavedOrderItem(value: unknown): value is SavedOrderItem {
   if (!value || typeof value !== "object") return false;
@@ -90,16 +138,24 @@ export function parseSavedOrders(stored: string | null) {
 
   try {
     const parsed: unknown = JSON.parse(stored);
+    const trackingTokens = readTrackingTokens();
     return Array.isArray(parsed)
       ? parsed.filter(isSavedOrder).map((order) => {
+          if (order.trackingToken) {
+            saveOrderTrackingToken(order.id, order.trackingToken);
+            trackingTokens[order.id] = order.trackingToken;
+          }
           const legacyRefundStatus = (order as unknown as {
             refundStatus?: string;
           }).refundStatus;
-          if (legacyRefundStatus !== "simulated") return order;
-          return {
+          const normalized = legacyRefundStatus !== "simulated" ? order : {
             ...order,
             paymentStatus: order.paymentStatus === "refunded" ? "paid" as const : order.paymentStatus,
             refundStatus: "failed" as const
+          };
+          return {
+            ...normalized,
+            trackingToken: trackingTokens[order.id]
           };
         })
       : [];

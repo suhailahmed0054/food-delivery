@@ -1,8 +1,10 @@
 import { Request, Response } from "express";
+import { randomInt } from "node:crypto";
 import mongoose from "mongoose";
 import { z } from "zod";
 import { Order } from "../models/Order";
 import { DeliveryPerson } from "../models/DeliveryPerson";
+import { Payment } from "../models/Payment";
 import {
   assignLocalOrderDelivery,
   createLocalOrderIdempotently,
@@ -50,6 +52,7 @@ import {
   getAllowedNextOrderStatuses,
   orderStatusValues
 } from "../services/orderStatusWorkflow";
+import { getOrderAuthenticationDecision } from "../services/orderAuthenticationService";
 import { createInAppNotification } from "../services/inAppNotificationService";
 import {
   initiateRazorpayRefund,
@@ -91,7 +94,7 @@ const createOrderSchema = z.object({
   discount: z.coerce.number().finite().min(0).optional(),
   couponCode: z.string().trim().max(30).optional(),
   paymentMethod: z.literal("cash_on_delivery").optional(),
-  orderType: z.enum(["delivery", "dine_in"]).default("delivery"),
+  orderType: z.enum(["delivery", "takeaway", "dine_in"]).default("delivery"),
   tableToken: z.string().trim().regex(/^[A-Za-z0-9_-]{16,128}$/).optional(),
   customerName: z.string().trim().min(1).max(200).optional(),
   phone: z.string().trim().max(30).optional(),
@@ -132,12 +135,37 @@ const cancelOrderSchema = z.object({
   trackingToken: z.string().trim().min(32).max(128).optional()
 });
 
+const listOrdersQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  search: z.string().trim().max(100).optional(),
+  status: z.enum(orderStatusValues).optional(),
+  orderType: z.enum(["delivery", "takeaway", "dine_in"]).optional(),
+  paginated: z.enum(["true", "false"]).default("false")
+});
+
 function isMongoConnected() {
   return Order.db.readyState === 1;
 }
 
 function createOrderNumber() {
-  return `AR-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 90 + 10)}`;
+  const date = new Date().toISOString().slice(2, 10).replace(/-/g, "");
+  return `AR-${date}-${randomInt(100000, 1000000)}`;
+}
+
+function isOrderNumberDuplicate(error: unknown) {
+  const duplicate = error as {
+    code?: number;
+    keyPattern?: Record<string, number>;
+    keyValue?: Record<string, unknown>;
+  };
+  return duplicate?.code === 11000 &&
+    (Boolean(duplicate.keyPattern?.orderNumber) ||
+      Boolean(duplicate.keyValue?.orderNumber));
+}
+
+function escapeRegularExpression(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizePhone(value?: string) {
@@ -153,7 +181,10 @@ function orderCustomerId(order: unknown) {
   return String(customer);
 }
 
-function orderStatusMessage(status: string, orderType: "delivery" | "dine_in") {
+function orderStatusMessage(
+  status: string,
+  orderType: "delivery" | "takeaway" | "dine_in"
+) {
   const messages: Record<string, string> = {
     pending: "Your order has been received by the restaurant.",
     placed: "Your order has been placed successfully.",
@@ -165,7 +196,9 @@ function orderStatusMessage(status: string, orderType: "delivery" | "dine_in") {
     ready_for_pickup: "Your order is ready for pickup.",
     out_for_delivery: "Your order is on the way.",
     served: "Your food has been served. Enjoy your meal.",
+    collected: "Your takeaway order has been collected.",
     delivered: "Your order has been delivered. Enjoy your meal.",
+    completed: "Your order is complete. Thank you for ordering.",
     cancelled: "Your order has been cancelled."
   };
   return messages[status] ?? `Your order status changed to ${status.replace(/_/g, " ")}.`;
@@ -214,31 +247,45 @@ export async function createOrder(req: Request, res: Response) {
     });
   }
 
-  const customerId = req.user?.id;
-  if (!customerId) {
-    return res.status(401).json({ message: "Customer authentication required" });
+  const authentication = getOrderAuthenticationDecision(
+    parsed.data.orderType,
+    req.user
+  );
+  if (!authentication.allowed) {
+    return res.status(authentication.status).json({
+      message: authentication.message,
+      code: authentication.code,
+      orderType: parsed.data.orderType
+    });
+  }
+  if (authentication.isGuestOrder && !parsed.data.customerName?.trim()) {
+    return res.status(400).json({
+      message: "Enter your name to continue as a dine-in guest",
+      code: "GUEST_NAME_REQUIRED"
+    });
   }
 
+  const customerId = authentication.customerId;
+  const idempotencySubject = authentication.idempotencySubject;
   const idempotencyKey = parsedIdempotencyKey.data;
   const idempotencyKeyHash = hashOrderIdempotencyKey(
-    customerId,
+    idempotencySubject,
     idempotencyKey
   );
   const idempotencyRequestHash = fingerprintOrderRequest(
-    customerId,
+    idempotencySubject,
     parsed.data
   );
   const trackingToken = createIdempotentOrderTrackingToken(
-    customerId,
+    idempotencySubject,
     idempotencyKey
   );
 
   const existingOrder = isMongoConnected()
     ? await Order.findOne({
-        customer: customerId,
         idempotencyKeyHash
       }).select("+idempotencyKeyHash +idempotencyRequestHash")
-    : await findLocalOrderByIdempotency(customerId, idempotencyKeyHash);
+    : await findLocalOrderByIdempotency(idempotencyKeyHash);
 
   if (existingOrder) {
     if (
@@ -362,7 +409,8 @@ export async function createOrder(req: Request, res: Response) {
     paymentMethod,
     paymentStatus: "pending" as const,
     orderType: orderInput.orderType,
-    customer: customerId,
+    ...(customerId ? { customer: customerId } : {}),
+    isGuestOrder: authentication.isGuestOrder,
     phone: orderInput.phone,
     customerPhoneNormalized: normalizePhone(orderInput.phone),
     email: orderInput.email,
@@ -394,7 +442,22 @@ export async function createOrder(req: Request, res: Response) {
   let replayed = false;
   try {
     if (isMongoConnected()) {
-      order = await Order.create(orderData);
+      let lastCollision: unknown;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          order = await Order.create({
+            ...orderData,
+            orderNumber: attempt === 0
+              ? orderData.orderNumber
+              : createOrderNumber()
+          });
+          break;
+        } catch (error) {
+          if (!isOrderNumberDuplicate(error)) throw error;
+          lastCollision = error;
+        }
+      }
+      if (!order) throw lastCollision ?? new Error("Unable to allocate an order number");
     } else {
       const localResult = await createLocalOrderIdempotently(orderData);
       order = localResult.order;
@@ -411,7 +474,6 @@ export async function createOrder(req: Request, res: Response) {
     };
     if (duplicateKeyError?.code === 11000) {
       const concurrentOrder = await Order.findOne({
-        customer: customerId,
         idempotencyKeyHash
       }).select("+idempotencyKeyHash +idempotencyRequestHash");
 
@@ -486,16 +548,72 @@ export async function createOrder(req: Request, res: Response) {
 }
 
 export async function listOrders(req: Request, res: Response) {
-  if (!isMongoConnected()) {
-    const orders = await listLocalOrders();
-    return res.json(
-      orders.slice(0, 100).map((order) => withoutOrderTrackingSecret(order))
-    );
+  const parsed = listOrdersQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({
+      message: "Invalid order filters",
+      errors: parsed.error.flatten()
+    });
   }
 
-  const filter = req.user?.role === "customer" ? { customer: req.user.id } : {};
-  const orders = await Order.find(filter).sort({ createdAt: -1 }).limit(100);
-  return res.json(orders);
+  const { page, limit, search, status, orderType, paginated } = parsed.data;
+  const shouldPaginate = paginated === "true";
+
+  if (!isMongoConnected()) {
+    const normalizedSearch = search?.toLowerCase();
+    const filtered = (await listLocalOrders()).filter((order) => {
+      if (status && order.status !== status) return false;
+      if (orderType && order.orderType !== orderType) return false;
+      if (!normalizedSearch) return true;
+      return [order.orderNumber, order.customerName, order.phone, order.email]
+        .some((value) => String(value ?? "").toLowerCase().includes(normalizedSearch));
+    });
+    if (!shouldPaginate) {
+      return res.json(filtered.slice(0, 100).map(withoutOrderTrackingSecret));
+    }
+    const offset = (page - 1) * limit;
+    return res.json({
+      orders: filtered.slice(offset, offset + limit).map(withoutOrderTrackingSecret),
+      page,
+      limit,
+      total: filtered.length,
+      totalPages: Math.max(1, Math.ceil(filtered.length / limit))
+    });
+  }
+
+  const filter: Record<string, unknown> =
+    req.user?.role === "customer" ? { customer: req.user.id } : {};
+  if (status) filter.status = status;
+  if (orderType) filter.orderType = orderType;
+  if (search) {
+    const expression = new RegExp(escapeRegularExpression(search), "i");
+    filter.$or = [
+      { orderNumber: expression },
+      { customerName: expression },
+      { phone: expression },
+      { email: expression }
+    ];
+  }
+
+  if (!shouldPaginate) {
+    const orders = await Order.find(filter).sort({ createdAt: -1 }).limit(100);
+    return res.json(orders);
+  }
+
+  const [orders, total] = await Promise.all([
+    Order.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+    Order.countDocuments(filter)
+  ]);
+  return res.json({
+    orders,
+    page,
+    limit,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / limit))
+  });
 }
 
 export async function getOrderTracking(req: Request, res: Response) {
@@ -546,8 +664,11 @@ export async function updateOrderStatus(req: Request, res: Response) {
     });
   }
 
-  const orderType =
-    existingOrder.orderType === "dine_in" ? "dine_in" : "delivery";
+  const orderType = existingOrder.orderType === "dine_in"
+    ? "dine_in"
+    : existingOrder.orderType === "takeaway"
+      ? "takeaway"
+      : "delivery";
   const currentStatus = String(existingOrder.status).toLowerCase();
   const requestedStatus = parsed.data.status;
   if (currentStatus === requestedStatus) return res.json(existingOrder);
@@ -573,13 +694,23 @@ export async function updateOrderStatus(req: Request, res: Response) {
       allowedStatuses
     });
   }
+  if (
+    orderType === "delivery" &&
+    requestedStatus === "out_for_delivery" &&
+    !(existingOrder as unknown as { deliveryAgent?: { staffId?: string } })
+      .deliveryAgent?.staffId
+  ) {
+    return res.status(409).json({
+      message: "Assign a delivery person before marking this order out for delivery"
+    });
+  }
   const now = new Date();
   const estimatedDeliveryAt = getEstimatedDeliveryAt(
     parsed.data.status,
     orderType,
     now
   );
-  const isCompleted = ["delivered", "served", "cancelled"].includes(
+  const isCompleted = ["delivered", "completed", "cancelled"].includes(
     parsed.data.status
   );
   let cancellationRefund: RefundResult | null = null;
@@ -682,7 +813,7 @@ export async function updateOrderStatus(req: Request, res: Response) {
   ).deliveryAgent?.staffId;
   if (
     assignedStaffId &&
-    (parsed.data.status === "delivered" || parsed.data.status === "cancelled")
+    (["delivered", "completed", "cancelled"] as string[]).includes(parsed.data.status)
   ) {
     if (isMongoConnected()) {
       await DeliveryPerson.findByIdAndUpdate(assignedStaffId, { status: "available" });
@@ -1023,4 +1154,69 @@ export async function assignOrderDelivery(req: Request, res: Response) {
     );
   }
   return res.json(order);
+}
+
+export async function markOrderPaymentReceived(req: Request, res: Response) {
+  const orderId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const order = isMongoConnected()
+    ? mongoose.Types.ObjectId.isValid(orderId)
+      ? await Order.findById(orderId)
+      : await Order.findOne({ orderNumber: orderId })
+    : await getLocalOrder(orderId);
+
+  if (!order) return res.status(404).json({ message: "Order not found" });
+  if (order.paymentMethod !== "cash_on_delivery") {
+    return res.status(409).json({
+      message: "Only cash orders can be marked received manually"
+    });
+  }
+  if (order.paymentStatus === "refunded" || order.status === "cancelled") {
+    return res.status(409).json({
+      message: "Cancelled or refunded orders cannot be marked paid"
+    });
+  }
+  if (order.paymentStatus === "paid") return res.json(order);
+
+  let updatedOrder;
+  if (isMongoConnected()) {
+    updatedOrder = await Order.findOneAndUpdate(
+      {
+        _id: order._id,
+        paymentMethod: "cash_on_delivery",
+        paymentStatus: { $in: ["pending", "failed"] },
+        status: { $ne: "cancelled" }
+      },
+      { $set: { paymentStatus: "paid" } },
+      { new: true, runValidators: true }
+    );
+    if (updatedOrder) {
+      await Payment.findOneAndUpdate(
+        { order: updatedOrder._id, provider: "cash_on_delivery" },
+        {
+          $set: {
+            amount: Math.round(Number(updatedOrder.total) * 100),
+            currency: "INR",
+            status: "collected"
+          }
+        },
+        { upsert: true, runValidators: true }
+      );
+    }
+  } else {
+    updatedOrder = await updateLocalOrder(order.id, { paymentStatus: "paid" });
+  }
+
+  if (!updatedOrder) {
+    return res.status(409).json({
+      message: "Payment state changed before this update completed. Refresh and try again."
+    });
+  }
+
+  const trackingUpdate = toPublicOrderTracking(updatedOrder);
+  const io = req.app.get("io");
+  if (io) {
+    io.to(orderTrackingRoom(trackingUpdate.orderNumber)).emit("order:payment", trackingUpdate);
+    io.to("orders:staff").emit("order_updated", trackingUpdate);
+  }
+  return res.json(updatedOrder);
 }

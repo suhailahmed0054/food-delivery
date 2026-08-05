@@ -27,6 +27,10 @@ apps/api/data/
 .DS_Store
 Thumbs.db
 .vscode/
+.idea/
+apps/web/android/.idea/
+*.jks
+*.keystore
 
 # Local audit and visual verification output
 .codex-logs/

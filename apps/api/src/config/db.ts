@@ -49,7 +49,7 @@ function mongoConnectionHint(error: unknown) {
   return "Verify that MONGODB_URI, the Atlas cluster, database user, and project Network Access list all belong to the same Atlas project.";
 }
 
-async function quarantineLegacySimulatedRefunds() {
+export async function quarantineLegacySimulatedRefunds() {
   const database = mongoose.connection.db;
   if (!database) return;
 
@@ -80,9 +80,7 @@ export function isDatabaseConnected() {
   return mongoose.connection.readyState === 1;
 }
 
-export async function connectDatabase(
-  options: { runStartupMaintenance?: boolean } = {}
-) {
+export async function connectDatabase() {
   if (!env.mongoUri) {
     if (env.isProduction) {
       throw new Error("MongoDB connection failed: MONGODB_URI is not configured");
@@ -97,9 +95,6 @@ export async function connectDatabase(
       dbName: env.mongoDatabaseName,
       serverSelectionTimeoutMS: 10_000
     });
-    if (options.runStartupMaintenance !== false) {
-      await quarantineLegacySimulatedRefunds();
-    }
     console.log("MongoDB connected");
     return true;
   } catch (error) {

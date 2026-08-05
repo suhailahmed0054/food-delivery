@@ -8,6 +8,10 @@ import {
   updateLocalMenuItem
 } from "../services/localMenuStore";
 import { env } from "../config/env";
+import {
+  cloudinaryPublicIdFromUrl,
+  deleteCloudinaryImage
+} from "../services/cloudinaryService";
 
 const FALLBACK_MENU_IMAGE =
   "https://images.unsplash.com/photo-1541518763669-27fef04b14ea?auto=format&fit=crop&w=1200&q=80";
@@ -87,6 +91,18 @@ function emitMenuUpdated(req: Request) {
   req.app.get("io")?.emit("menu:updated", { updatedAt: new Date().toISOString() });
 }
 
+async function removeManagedImage(publicId?: string) {
+  if (!publicId) return;
+  try {
+    await deleteCloudinaryImage(publicId);
+  } catch (error) {
+    console.warn(
+      "Menu item saved, but the previous Cloudinary image could not be removed:",
+      error instanceof Error ? error.message : "Unknown image deletion error"
+    );
+  }
+}
+
 export async function listMenu(_req: Request, res: Response) {
   try {
     res.set("Cache-Control", "public, max-age=30, stale-while-revalidate=300");
@@ -115,6 +131,7 @@ export async function createMenuItem(req: Request, res: Response) {
 
     const item = await MenuItem.create({
       ...parsed.data,
+      imagePublicId: cloudinaryPublicIdFromUrl(parsed.data.image),
       rating: 0,
       reviews: 0
     });
@@ -139,8 +156,27 @@ export async function updateMenuItem(req: Request, res: Response) {
       return res.json(item);
     }
 
-    const item = await MenuItem.findByIdAndUpdate(id, parsed.data, { new: true, runValidators: true });
+    const existing = await MenuItem.findById(id).select("+imagePublicId");
+    if (!existing) return res.status(404).json({ message: "Menu item not found" });
+    const imageChanged = parsed.data.image && parsed.data.image !== existing.image;
+    const previousPublicId = imageChanged
+      ? existing.imagePublicId ?? cloudinaryPublicIdFromUrl(existing.image)
+      : undefined;
+    const nextPublicId = imageChanged
+      ? cloudinaryPublicIdFromUrl(parsed.data.image!)
+      : undefined;
+    const update = imageChanged
+      ? {
+          $set: {
+            ...parsed.data,
+            ...(nextPublicId ? { imagePublicId: nextPublicId } : {})
+          },
+          ...(!nextPublicId ? { $unset: { imagePublicId: 1 } } : {})
+        }
+      : { $set: parsed.data };
+    const item = await MenuItem.findByIdAndUpdate(id, update, { new: true, runValidators: true });
     if (!item) return res.status(404).json({ message: "Menu item not found" });
+    await removeManagedImage(previousPublicId);
     emitMenuUpdated(req);
     return res.json(item);
   } catch {
@@ -159,8 +195,11 @@ export async function deleteMenuItem(req: Request, res: Response) {
       return res.status(204).send();
     }
 
-    const item = await MenuItem.findByIdAndDelete(id);
+    const item = await MenuItem.findByIdAndDelete(id).select("+imagePublicId");
     if (!item) return res.status(404).json({ message: "Menu item not found" });
+    await removeManagedImage(
+      item.imagePublicId ?? cloudinaryPublicIdFromUrl(item.image)
+    );
     emitMenuUpdated(req);
     return res.status(204).send();
   } catch {

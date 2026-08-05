@@ -43,7 +43,11 @@ import {
   type SupportIssue
 } from "@/lib/api";
 import { buildReorderCartItems } from "@/lib/reorder";
-import { parseSavedOrders, type SavedOrder } from "@/lib/saved-orders";
+import {
+  parseSavedOrders,
+  serializeSavedOrders,
+  type SavedOrder
+} from "@/lib/saved-orders";
 import { useCustomer3DReveal } from "@/lib/use-customer-3d-reveal";
 import { useCartStore } from "@/store/cart-store";
 
@@ -72,7 +76,9 @@ function statusLabel(status: string) {
     ready_for_pickup: "Ready",
     out_for_delivery: "Out for Delivery",
     served: "Served",
+    collected: "Collected",
     delivered: "Delivered",
+    completed: "Completed",
     cancelled: "Cancelled"
   };
   const normalized = normalizeStatus(status);
@@ -80,7 +86,7 @@ function statusLabel(status: string) {
 }
 
 function isActiveStatus(status: string) {
-  return !["served", "delivered", "cancelled"].includes(
+  return !["delivered", "completed", "cancelled"].includes(
     normalizeStatus(status)
   );
 }
@@ -101,9 +107,10 @@ function formatTrackingTime(value?: string) {
 }
 
 function getTrackingSteps(order: SavedOrder) {
-  const steps =
-    order.orderType === "dine_in"
-      ? ["Placed", "Accepted", "Preparing", "Ready", "Delivered"]
+  const steps = order.orderType === "dine_in"
+    ? ["Placed", "Accepted", "Preparing", "Ready", "Served"]
+    : order.orderType === "takeaway"
+      ? ["Placed", "Accepted", "Preparing", "Ready", "Collected"]
       : ["Placed", "Accepted", "Preparing", "Ready", "On the way"];
   const indexes: Record<string, number> = {
     pending: 0,
@@ -114,7 +121,9 @@ function getTrackingSteps(order: SavedOrder) {
     ready_for_pickup: 3,
     out_for_delivery: 4,
     served: 4,
+    collected: 4,
     delivered: 4,
+    completed: 4,
     cancelled: -1
   };
 
@@ -384,7 +393,7 @@ export default function OrdersPage() {
         );
         window.localStorage.setItem(
           "al-arab-orders",
-          JSON.stringify(
+          serializeSavedOrders(
             next.filter((order) => !accountOnlyOrderIds.current.has(order.id))
           )
         );
@@ -543,7 +552,7 @@ export default function OrdersPage() {
         } : o);
         window.localStorage.setItem(
           "al-arab-orders",
-          JSON.stringify(
+          serializeSavedOrders(
             next.filter((order) => !accountOnlyOrderIds.current.has(order.id))
           )
         );
@@ -724,6 +733,11 @@ export default function OrdersPage() {
                 Dine-in · Table {order.tableNumber}
               </p>
             )}
+            {order.orderType === "takeaway" && (
+              <p className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-yellow-500/25 bg-yellow-500/10 px-2 py-1 text-xs font-black text-yellow-500">
+                Takeaway · Restaurant pickup
+              </p>
+            )}
           </div>
 
           {isActive ? (
@@ -756,9 +770,11 @@ export default function OrdersPage() {
               <div className="min-w-0 rounded-xl border border-yellow-500/20 bg-yellow-500/[0.07] p-4">
                 <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-yellow-500">
                   <Clock size={14} />
-                  {order.orderType === "dine_in"
-                    ? "Estimated ready time"
-                    : "Estimated arrival"}
+                  {order.orderType === "delivery"
+                    ? "Estimated arrival"
+                    : order.orderType === "takeaway"
+                      ? "Estimated pickup time"
+                      : "Estimated ready time"}
                 </p>
                 <p className="mt-2 font-heading text-2xl font-semibold text-white">
                   {formatTrackingTime(order.estimatedDeliveryAt)}
@@ -768,7 +784,7 @@ export default function OrdersPage() {
                 </p>
               </div>
 
-              {order.deliveryAgent?.name ? (
+              {order.orderType === "delivery" && order.deliveryAgent?.name ? (
                 <div className="min-w-0 rounded-xl border border-white/10 bg-white/[0.04] p-4">
                   <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-white/45">
                     <Bike size={14} className="text-yellow-500" />
@@ -810,7 +826,9 @@ export default function OrdersPage() {
                   <p className="mt-2 break-words text-sm font-semibold text-white/70">
                     {order.orderType === "dine_in"
                       ? "Your table order is with the restaurant team."
-                      : "A rider will appear here after assignment."}
+                      : order.orderType === "takeaway"
+                        ? "The restaurant team will prepare this order for pickup."
+                        : "A rider will appear here after assignment."}
                   </p>
                 </div>
               )}

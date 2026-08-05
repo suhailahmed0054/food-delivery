@@ -32,16 +32,16 @@ or changing a supported feature.
 | `EMAIL_FROM` | Yes. `emailService:sendWithResend`. | Mandatory production. Must be an address at the Resend-verified `al-arabrestaurant.cc.cd` domain or a verified subdomain. | Private configuration, not a credential. | Active; no. |
 | `ADMIN_EMAIL` | Yes. `scripts/createAdmin.ts:createAdmin` and development-only local admin fallback in `authRoutes`. | Optional during normal production runtime; required only for the one-time seed command. | Private identifier. | Active seed input; remove it from the runtime dashboard after seeding. |
 | `ADMIN_PASSWORD` | Yes. `createAdmin` hashes it with bcrypt cost 12; development fallback compares it only when MongoDB is unavailable outside production. | Optional normal runtime; required only for one-time seed/local override. | Secret. | Active seed input; remove it from runtime after seeding. Never stored as plaintext in MongoDB. |
-| `ADMIN_SIGNUP_CODE` | No after audit. The public admin registration route/UI was removed. | None. | Former secret. | Obsolete and removed everywhere. |
+| `ADMIN_SIGNUP_CODE` | Yes. `config/env.ts` validates it and `authRoutes.ts` performs a timing-safe server-side comparison for first-admin registration. | Mandatory production secret for the first-admin profile flow; optional locally when that flow is intentionally unavailable. | Secret, backend only. | Active; never expose through a `NEXT_PUBLIC_` variable. |
 | `GOOGLE_CLIENT_ID` | No after audit. There was a backend token endpoint but no frontend Google login or client-ID delivery. | None. | Former public identifier. | Incomplete/dead integration; removed with its dependency and model/local-store fields. |
 | `RAZORPAY_KEY_ID` | Yes. `razorpayService:getRazorpayClient`; `paymentController:createRazorpayOrder`. | Optional while checkout is COD-only. Mandatory with the other two Razorpay values if online payment is re-enabled. | Public/provider identifier returned to an authenticated checkout. | Active dormant integration; not safe to remove without deleting payment/refund support. |
 | `RAZORPAY_KEY_SECRET` | Yes. Razorpay client and `paymentController:paymentSignature`. | Conditional, all-or-none with Razorpay key ID and webhook secret. | Secret. | Active; no. |
 | `RAZORPAY_WEBHOOK_SECRET` | Yes. `paymentController:verifyRazorpayWebhook`. | Conditional with Razorpay integration. | Secret. | Active; no. |
 | `TRUST_PROXY_HOPS` | Yes. `server.ts` passes it to Express `trust proxy`, affecting secure cookies, IPs, and rate limits. | Required positive integer in production; `0` locally. | Private, non-secret. | Active; no. |
 | `MENU_IMAGE_HOSTS` | Yes. `menuController:isApprovedImageUrl` and menu create/update validation. | Optional; defaults to Unsplash and Cloudinary. | Public allow-list. | Active override; safely omit when defaults are correct. |
-| `CLOUDINARY_CLOUD_NAME` | Yes. `cloudinaryService:uploadMenuImageToCloudinary`. | Optional integration; required with the other two values when admin menu-image upload is enabled. | Public account identifier. | Active; safely omit only when menu uploads are intentionally disabled. |
-| `CLOUDINARY_API_KEY` | Yes. Same upload function. | Optional integration; all three Cloudinary values are validated as a group. | Secret server credential. | Active; safely omit only when menu uploads are intentionally disabled. |
-| `CLOUDINARY_API_SECRET` | Yes. Signs Cloudinary uploads. | Optional integration; all three Cloudinary values are validated as a group. | Secret. | Active; safely omit only when menu uploads are intentionally disabled. |
+| `CLOUDINARY_CLOUD_NAME` | Yes. `cloudinaryService` upload/delete helpers for menu and support evidence. | Optional integration; required with the other two values when image upload is enabled. | Public account identifier. | Active; safely omit only when menu/support image attachments are intentionally disabled. |
+| `CLOUDINARY_API_KEY` | Yes. Same upload/delete helpers. | Optional integration; all three Cloudinary values are validated as a group. | Secret server credential. | Active; safely omit only when image uploads are intentionally disabled. |
+| `CLOUDINARY_API_SECRET` | Yes. Signs Cloudinary uploads and deletions. | Optional integration; all three Cloudinary values are validated as a group. | Secret. | Active; safely omit only when image uploads are intentionally disabled. |
 | `RELEASE_SHA` | Yes. `env.releaseSha`; health responses and operational alerts. | Optional; falls back to host `RENDER_GIT_COMMIT`, then `development`. | Public build metadata. | Active optional metadata; safely omit on Render. |
 | `SHUTDOWN_TIMEOUT_MS` | Yes. `server.ts:shutdown`. | Optional; defaults to `10000`. | Private, non-secret. | Active override; safely omit. |
 | `ALERT_WEBHOOK_URL` | Yes. `operationalAlertService:reportOperationalAlert`. | Optional. Missing value disables outbound operational alerts and no longer fails production validation. | Secret URL/token. | Active optional integration; safely omit when external alerting is intentionally disabled. |
@@ -73,6 +73,8 @@ or changing a supported feature.
 | `BACKUP_ENCRYPTION_PASSPHRASE` | Yes. GitHub backup encryption. | Required only for automated backup. | Secret. | Active CI secret. |
 | `JAVA_HOME` | Yes. `android-build.mjs:firstExisting`. | Optional if Android Studio JBR is auto-detected; Android build machine only. | Private machine path. | Active tooling. |
 | `ANDROID_HOME`, `ANDROID_SDK_ROOT` | Yes. Android build SDK discovery. | Optional if SDK is auto-detected; Android build machine only. | Private machine path. | Active tooling. |
+| `ANDROID_VERSION_CODE`, `ANDROID_VERSION_NAME` | Yes. Android Gradle and release script. | Required for a release bundle; not used by the web/API runtime. | Public release metadata. | Active Android release tooling. |
+| `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | Yes. Android Gradle and release script. | Required together for a signed release bundle. | Secret/private release-machine values. | Active; never place in tracked env examples with real values. |
 | `LOCALAPPDATA`, `ComSpec`, `PWD` | Yes, indirectly in Windows build/root scripts or workflow shell. | OS/runner-provided; never application configuration. | Private machine/runtime metadata. | Do not add to env examples. |
 
 ## Removed or confirmed obsolete names
@@ -80,7 +82,6 @@ or changing a supported feature.
 | Variable | Decision |
 |---|---|
 | `CLIENT_URL` | Removed legacy fallback. Production and development now use the explicit customer/admin origins. |
-| `ADMIN_SIGNUP_CODE` | Removed with public admin signup. Admins are seeded through the protected command. |
 | `GOOGLE_CLIENT_ID` | Removed because the project had no usable frontend Google sign-in flow. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | Not referenced anywhere. Obsolete values may be deleted from ignored local `.env` files; Resend is the implemented mail provider. |
 | `NEXT_PUBLIC_SOCKET_URL`, `NEXT_PUBLIC_MAPS_PROVIDER`, `NEXT_PUBLIC_GOOGLE_MAPS_KEY` | Never implemented; removed from stale architecture documentation. Socket.IO uses the origin derived from `NEXT_PUBLIC_API_URL`. |
@@ -123,7 +124,12 @@ unreachable Redis instance still fails safely.
 
 ### Admin credentials and signup
 
-Public admin signup is removed. Create or rotate an administrator using:
+The admin login page offers a first-admin profile form protected by the
+server-only `ADMIN_SIGNUP_CODE`. The API validates the code, permits only one
+primary profile, bcrypt-hashes the password and creates the normal HTTP-only
+cookie session. The value is never included in frontend configuration.
+
+Create or rotate later administrators using the protected command:
 
 ```powershell
 npm run create-admin -w apps/api
@@ -168,7 +174,7 @@ EMAIL_FROM=Al-Arab Restaurant <login@al-arabrestaurant.cc.cd>
 TRUST_PROXY_HOPS=1
 ```
 
-To enable persistent admin menu-image uploads, additionally configure
+To enable persistent menu and support-image uploads, additionally configure
 `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`
 together. When all three are absent, the API starts normally and the protected
 upload endpoint returns `503 Image uploads are not configured`.

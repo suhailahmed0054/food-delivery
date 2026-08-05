@@ -42,18 +42,18 @@ When `MONGODB_URI` is not set, the API also persists table QR tokens and orders 
 ## Current Features
 
 - Restaurant hero with rating, delivery time, delivery fee and restaurant branding
-- Searchable and filterable menu with categories, images, availability, reviews and customization options
+- Searchable and filterable menu with categories, images, availability, reviews, sizes, spice levels, and add-ons
 - Persistent shopping cart with quantity controls, tax, delivery fee and promo code calculation
 - Checkout form for address, delivery time, special instructions and payment method
-- Delivery checkout with an address, plus address-free dine-in checkout from verified table QR codes
+- Delivery checkout with an address, restaurant takeaway, and address-free dine-in checkout from verified table QR codes
 - Ten persistent table records with private QR tokens, pause/activate controls, and token rotation
 - Printable SVG QR codes in Admin → Table QR Codes; each opens `/menu?t=<private-token>`
-- API-backed live orders with dine-in table number, dine-in statuses, and five-second admin polling
+- API-backed paginated/searchable live orders with delivery, takeaway and dine-in workflows
 - Cash-on-delivery order confirmation flow
 - Order tracking timeline, map placeholder, delivery ETA, rider contact and review area
 - Account feature surface for login, saved addresses, favorites, history and reorder workflows
 - Admin orders management, kitchen display, menu management, settings, analytics, customer management and notifications
-- Persistent menu photo uploads through Cloudinary
+- Persistent menu/support image uploads with Cloudinary replacement and deletion tracking
 - MongoDB schemas for users, menu items, orders, payments and reviews
 
 ## Run Locally
@@ -79,6 +79,11 @@ npm.cmd run dev:api
 
 Copy the `.env.example` files before connecting MongoDB, Resend, Cloudinary,
 optional Redis, optional Razorpay, or optional Twilio SMS.
+
+To create the first administrator, configure the server-only
+`ADMIN_SIGNUP_CODE` in `apps/api/.env`, open `/admin/login`, and select
+**Create profile**. The API permits this setup only while no administrator
+exists. Never expose the code through a `NEXT_PUBLIC_` variable.
 
 ## Table QR ordering
 
@@ -106,4 +111,5 @@ for the full usage/removal analysis,
 minimal deployment values, and
 [docs/LAUNCH_RUNBOOK.md](docs/LAUNCH_RUNBOOK.md) for managed service setup,
 staging validation, Razorpay events, automated uptime checks, backups, restore
-drills, release tagging, and rollback.
+drills, release tagging, and rollback. Public launch also requires every item in
+[docs/PUBLIC_LAUNCH_CHECKLIST.md](docs/PUBLIC_LAUNCH_CHECKLIST.md).

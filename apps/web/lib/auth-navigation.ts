@@ -1,3 +1,5 @@
+import type { CustomerOrderType } from "./order-type-session";
+
 const DEFAULT_POST_LOGIN_PATH = "/profile";
 const CHECKOUT_PATH = "/checkout";
 
@@ -31,9 +33,16 @@ export function getSafeReturnTo(
   }
 }
 
-export function getCheckoutLoginPath(returnTo = CHECKOUT_PATH) {
+export function getCheckoutLoginPath(
+  returnTo = CHECKOUT_PATH,
+  orderType?: CustomerOrderType
+) {
   const safeReturnTo = getSafeReturnTo(returnTo, CHECKOUT_PATH);
-  return `/login?returnTo=${encodeURIComponent(safeReturnTo)}`;
+  const query = new URLSearchParams({ returnTo: safeReturnTo });
+  if (orderType === "delivery" || orderType === "takeaway") {
+    query.set("orderType", orderType);
+  }
+  return `/login?${query.toString()}`;
 }
 
 export function isCheckoutReturnPath(value: string | null | undefined) {

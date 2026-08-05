@@ -30,6 +30,7 @@ const issueSchema = new Schema(
       type: [String],
       default: []
     },
+    imagePublicIds: { type: [String], default: [], select: false },
     chatStatus: {
       type: String,
       enum: ["waiting", "active", "closed"],

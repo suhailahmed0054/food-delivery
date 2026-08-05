@@ -26,14 +26,15 @@ const orderSchema = new Schema(
     couponCode: { type: String, trim: true, uppercase: true, maxlength: 30 },
     status: {
       type: String,
-      enum: ["pending", "placed", "accepted", "preparing", "ready", "ready_for_pickup", "out_for_delivery", "served", "delivered", "cancelled"],
+      enum: ["pending", "placed", "accepted", "preparing", "ready", "ready_for_pickup", "out_for_delivery", "served", "collected", "delivered", "completed", "cancelled"],
       default: "placed"
     },
     paymentMethod: { type: String, enum: ["cash_on_delivery", "razorpay"], default: "cash_on_delivery" },
     paymentStatus: { type: String, enum: ["pending", "paid", "failed", "refunded"], default: "pending" },
     razorpayOrderId: String,
     razorpayPaymentId: String,
-    orderType: { type: String, enum: ["delivery", "dine_in"], default: "delivery" },
+    orderType: { type: String, enum: ["delivery", "takeaway", "dine_in"], default: "delivery" },
+    isGuestOrder: { type: Boolean, default: false },
     table: { type: Schema.Types.ObjectId, ref: "Table" },
     tableNumber: String,
     phone: String,
@@ -99,12 +100,11 @@ orderSchema.index({ customer: 1, createdAt: -1 });
 orderSchema.index({ razorpayOrderId: 1 }, { sparse: true });
 orderSchema.index({ razorpayPaymentId: 1 }, { sparse: true });
 orderSchema.index(
-  { customer: 1, idempotencyKeyHash: 1 },
+  { idempotencyKeyHash: 1 },
   {
     unique: true,
-    name: "unique_customer_order_idempotency",
+    name: "unique_order_idempotency_key",
     partialFilterExpression: {
-      customer: { $exists: true },
       idempotencyKeyHash: { $type: "string" }
     }
   }

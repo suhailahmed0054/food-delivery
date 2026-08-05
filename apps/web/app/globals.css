@@ -1098,6 +1098,34 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Admin shell scroll regions: dark, narrow tracks without browser-white gutters. */
+.admin-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.42) transparent;
+  overscroll-behavior: contain;
+}
+
+.admin-scrollbar::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+.admin-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.admin-scrollbar::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.38);
+  background-clip: padding-box;
+}
+
+.admin-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--primary) / 0.48);
+  background-clip: padding-box;
+}
+
 button,
 input,
 select,

@@ -61,7 +61,7 @@ async function main() {
   console.log("PASS [API health] /api/health/ready configuration");
   console.log("PASS [API OTP] Resend sender, API key, and OTP hash secret are configured");
 
-  await connectDatabase({ runStartupMaintenance: false });
+  await connectDatabase();
   if (!isDatabaseConnected()) throw new Error("MongoDB readiness check failed");
 
   if (env.redisUrl) {

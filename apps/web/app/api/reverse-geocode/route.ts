@@ -46,7 +46,8 @@ export async function GET(request: NextRequest) {
           Accept: "application/json",
           "User-Agent": "Al-Arab-Restaurant/1.0"
         },
-        cache: "no-store"
+        cache: "no-store",
+        signal: AbortSignal.timeout(10_000)
       }
     );
     if (!response.ok) throw new Error(`Nominatim returned ${response.status}`);

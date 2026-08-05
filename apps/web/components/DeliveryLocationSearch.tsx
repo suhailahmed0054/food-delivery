@@ -9,6 +9,7 @@ import {
   Search,
   X
 } from "lucide-react";
+import { fetchWithTimeout } from "@/lib/api";
 import { useEffect, useRef, useState } from "react";
 
 export type DeliveryLocationSearchResult = {
@@ -76,9 +77,10 @@ export function DeliveryLocationSearch({
         setIsSearching(true);
         setSearchError("");
         try {
-          const response = await fetch(
+          const response = await fetchWithTimeout(
             `/api/location-search?q=${encodeURIComponent(searchTerm)}`,
-            { signal: controller.signal }
+            { signal: controller.signal },
+            10_000
           );
           if (!response.ok) throw new Error("Search unavailable");
           const payload = (await response.json()) as {

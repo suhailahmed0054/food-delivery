@@ -31,8 +31,9 @@ Enable MongoDB Atlas continuous cloud backups in addition to the daily logical b
 6. If menu image uploads are enabled, set `CLOUDINARY_CLOUD_NAME`,
    `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET` together from the
    Cloudinary API Keys page. Never place those values in Git-tracked files.
-7. Seed the first administrator from a protected shell using temporary
-   `ADMIN_EMAIL` and `ADMIN_PASSWORD` values:
+7. Configure the server-only `ADMIN_SIGNUP_CODE`, then create the first profile
+   from `/admin/login`. Alternatively, seed it from a protected shell using
+   temporary `ADMIN_EMAIL` and `ADMIN_PASSWORD` values:
 
    ```bash
    npm run create-admin -w apps/api
@@ -44,6 +45,13 @@ Enable MongoDB Atlas continuous cloud backups in addition to the daily logical b
 
    ```bash
    npm run migrate-menu-images -w apps/api
+   ```
+
+   Run the legacy refund correction explicitly once if it has not already been
+   applied; normal API startup no longer mutates historical records:
+
+   ```bash
+   npm run migrate-legacy-refunds -w apps/api
    ```
 
 9. Deploy with auto-deploy disabled until staging checks pass.
@@ -124,10 +132,13 @@ Then perform one manual order from a real phone over mobile data:
 1. Register and sign in.
 2. Select a precise map pin and verify the delivery-radius result.
 3. Add customized menu items and confirm cart totals.
-4. Complete one Razorpay test payment and confirm the admin receives it once.
-5. Move the order through preparing, dispatch, delivery, and receipt printing.
+4. Complete one COD order and mark the payment received exactly once. Test
+   Razorpay separately only if online payment is deliberately enabled.
+5. Assign a rider, then move the delivery order through accepted, preparing,
+   ready, dispatch, delivery, and receipt printing.
 6. Verify customer notifications, order tracking, review submission, and refund processing.
-7. Complete one COD order and one table QR dine-in order.
+7. Complete takeaway through collected/completed and table QR dine-in through
+   served/completed.
 8. Confirm a failed payment cannot mark an order as paid.
 9. If Cloudinary is enabled, upload a menu photo from Admin, reload the customer
    menu, and verify the image remains available after redeploying both services.

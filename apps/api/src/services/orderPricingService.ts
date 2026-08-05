@@ -26,7 +26,7 @@ export const pricingOrderItemSchema = z.object({
 
 export const orderQuoteSchema = z.object({
   items: z.array(pricingOrderItemSchema).min(1).max(100),
-  orderType: z.enum(["delivery", "dine_in"]).default("delivery"),
+  orderType: z.enum(["delivery", "takeaway", "dine_in"]).default("delivery"),
   couponCode: z.string().trim().max(30).optional(),
   phone: z.string().trim().max(30).optional()
 });

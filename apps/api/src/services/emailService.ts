@@ -24,7 +24,8 @@ async function sendWithResend(message: EmailMessage) {
       subject: message.subject,
       html: message.html,
       text: message.text
-    })
+    }),
+    signal: AbortSignal.timeout(10_000)
   });
 
   if (!response.ok) {

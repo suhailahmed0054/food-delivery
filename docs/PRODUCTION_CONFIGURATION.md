@@ -51,8 +51,9 @@ not required in the normal Vercel web environment.
 
 - `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`,
   `CLOUDINARY_API_SECRET`: configure all three to enable persistent admin menu
-  image uploads. If all three are omitted, API startup remains available and
-  the upload endpoint reports that storage is not configured.
+  menu and support image uploads. If all three are omitted, API startup remains
+  available; text-only support remains available and image endpoints report
+  that storage is not configured.
 - `REDIS_URL`: shared rate-limit counters. Omit only for a single API instance.
 - `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`,
   `RAZORPAY_WEBHOOK_SECRET`: configure all three when online payment is enabled.
@@ -64,10 +65,17 @@ not required in the normal Vercel web environment.
 - `MONGODB_DATABASE`, `MENU_IMAGE_HOSTS`, `SHUTDOWN_TIMEOUT_MS`: optional
   overrides with reviewed defaults.
 
-## Secure admin seeding
+## Secure first-admin setup and maintenance
 
-There is no public admin-signup route. Temporarily provide `ADMIN_EMAIL` and
-`ADMIN_PASSWORD` with the production MongoDB connection, then run:
+Configure a unique server-only `ADMIN_SIGNUP_CODE` of at least 32 characters.
+The **Create Admin Profile** section at `/admin/login` sends it only to the API,
+which validates it with a timing-safe comparison, bcrypt-hashes the password,
+and allows creation only when no administrator exists. The code must never use
+a `NEXT_PUBLIC_` name or be placed in Vercel.
+
+The protected seed command remains available to create or rotate administrators
+after initial setup. Temporarily provide `ADMIN_EMAIL` and `ADMIN_PASSWORD` with
+the production MongoDB connection, then run:
 
 ```powershell
 npm run create-admin -w apps/api
@@ -85,3 +93,14 @@ npm run verify:production
 The command does not print secret values. It connects to MongoDB read-only after
 configuration validation. Redis is checked when configured and reported as
 intentionally disabled otherwise.
+
+## Android release inputs
+
+Android release signing values belong only in the protected build machine or CI
+secret store: `ANDROID_VERSION_CODE`, `ANDROID_VERSION_NAME`,
+`ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and
+`ANDROID_KEY_PASSWORD`. Set
+`CAPACITOR_SERVER_URL=https://al-arabrestaurant.cc.cd`, then run
+`npm run android:release`. The command validates configuration, synchronizes
+Capacitor, enables R8/resource shrinking, and creates a signed AAB. Never commit
+the keystore or its passwords.

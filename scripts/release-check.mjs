@@ -12,7 +12,25 @@ function main() {
   if (branch !== "main") throw new Error(`Release branch must be main, found ${branch}`);
   if (changes) throw new Error("Release worktree is not clean");
 
-  console.log(`Release source verified: ${branch}@${commit}`);
+  let upstream;
+  try {
+    upstream = git("rev-parse", "--abbrev-ref", "@{upstream}");
+  } catch {
+    throw new Error("Release branch must track a remote upstream");
+  }
+  const [behind, ahead] = git(
+    "rev-list",
+    "--left-right",
+    "--count",
+    `${upstream}...HEAD`
+  ).split(/\s+/).map(Number);
+  if (behind || ahead) {
+    throw new Error(
+      `Release source must match ${upstream}; behind=${behind}, ahead=${ahead}`
+    );
+  }
+
+  console.log(`Release source verified: ${branch}@${commit} matches ${upstream}`);
 }
 
 try {

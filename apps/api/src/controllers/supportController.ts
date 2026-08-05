@@ -29,6 +29,11 @@ import {
   RefundProcessingError,
   type RefundResult
 } from "../services/refundService";
+import {
+  deleteCloudinaryImage,
+  ImageStorageConfigurationError,
+  uploadSupportImageToCloudinary
+} from "../services/cloudinaryService";
 
 const supportImagesSchema = z.array(z.string().max(1_500_000)).max(4).optional();
 const trackingTokenSchema = z.string().trim().min(32).max(128);
@@ -131,6 +136,54 @@ function validateBase64Image(dataUrl: string): { valid: boolean; message?: strin
   return { valid: true };
 }
 
+async function storeSupportImages(images: string[] | undefined) {
+  const stored: Array<{ imageUrl: string; publicId: string }> = [];
+  try {
+    for (const dataUrl of images ?? []) {
+      const match = dataUrl.match(
+        /^data:(image\/(?:jpeg|jpg|png|webp));base64,([A-Za-z0-9+/=]+)$/
+      );
+      if (!match) throw new Error("Invalid support image data");
+      const mimeType = match[1] === "image/jpg" ? "image/jpeg" : match[1];
+      stored.push(
+        await uploadSupportImageToCloudinary(
+          Buffer.from(match[2], "base64"),
+          mimeType
+        )
+      );
+    }
+    return stored;
+  } catch (error) {
+    await Promise.allSettled(
+      stored.map((image) => deleteCloudinaryImage(image.publicId))
+    );
+    throw error;
+  }
+}
+
+async function cleanupSupportImages(
+  images: Array<{ imageUrl: string; publicId: string }>
+) {
+  await Promise.allSettled(
+    images.map((image) => deleteCloudinaryImage(image.publicId))
+  );
+}
+
+function sendSupportImageStorageError(res: Response, error: unknown) {
+  if (error instanceof ImageStorageConfigurationError) {
+    return res.status(503).json({
+      message: "Support image attachments are temporarily unavailable. You can still send a text-only request."
+    });
+  }
+  console.error(
+    "Cloudinary support image upload failed:",
+    error instanceof Error ? error.message : "Unknown upload error"
+  );
+  return res.status(502).json({
+    message: "Unable to store the support image. Please try again."
+  });
+}
+
 export async function createIssue(req: Request, res: Response) {
   const parsed = createIssueSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -187,37 +240,50 @@ export async function createIssue(req: Request, res: Response) {
   const customerPhone = order.phone || "N/A";
   const customerEmail = order.email || "";
 
+  let storedImages: Awaited<ReturnType<typeof storeSupportImages>>;
+  try {
+    storedImages = await storeSupportImages(images);
+  } catch (error) {
+    return sendSupportImageStorageError(res, error);
+  }
+
   // Create issue
   let issue: SupportIssueRecord;
-  if (isMongoConnected()) {
-    issue = await Issue.create({
-      order: order._id,
-      orderNumber,
-      customer: order.customer || req.user?.id,
-      customerName,
-      phone: customerPhone,
-      email: customerEmail,
-      category,
-      description,
-      desiredResolution,
-      images: images || [],
-      status: "open",
-      resolutionDetails: "",
-      refundAmount: 0
-    });
-  } else {
-    issue = await createLocalIssue({
-      order: order.id,
-      orderNumber,
-      customer: order.customer || req.user?.id,
-      customerName,
-      phone: customerPhone,
-      email: customerEmail,
-      category,
-      description,
-      desiredResolution,
-      images: images || []
-    });
+  try {
+    if (isMongoConnected()) {
+      issue = await Issue.create({
+        order: order._id,
+        orderNumber,
+        customer: order.customer || req.user?.id,
+        customerName,
+        phone: customerPhone,
+        email: customerEmail,
+        category,
+        description,
+        desiredResolution,
+        images: storedImages.map((image) => image.imageUrl),
+        imagePublicIds: storedImages.map((image) => image.publicId),
+        status: "open",
+        resolutionDetails: "",
+        refundAmount: 0
+      });
+    } else {
+      issue = await createLocalIssue({
+        order: order.id,
+        orderNumber,
+        customer: order.customer || req.user?.id,
+        customerName,
+        phone: customerPhone,
+        email: customerEmail,
+        category,
+        description,
+        desiredResolution,
+        images: storedImages.map((image) => image.imageUrl)
+      });
+    }
+  } catch (error) {
+    await cleanupSupportImages(storedImages);
+    throw error;
   }
 
   // Create system message for the new ticket
@@ -521,36 +587,49 @@ export async function sendMessage(req: Request, res: Response) {
   let newMessage;
   const now = new Date();
 
-  if (isMongoConnected()) {
-    newMessage = await SupportMessage.create({
-      issue: issue._id,
-      order: issue.order,
-      sender: senderId ? new mongoose.Types.ObjectId(senderId) : undefined,
-      senderType,
-      senderName,
-      message,
-      images: images || []
-    });
-    await Issue.findByIdAndUpdate(issue._id, {
-      $set: {
+  let storedImages: Awaited<ReturnType<typeof storeSupportImages>>;
+  try {
+    storedImages = await storeSupportImages(images);
+  } catch (error) {
+    return sendSupportImageStorageError(res, error);
+  }
+
+  try {
+    if (isMongoConnected()) {
+      newMessage = await SupportMessage.create({
+        issue: issue._id,
+        order: issue.order,
+        sender: senderId ? new mongoose.Types.ObjectId(senderId) : undefined,
+        senderType,
+        senderName,
+        message,
+        images: storedImages.map((image) => image.imageUrl),
+        imagePublicIds: storedImages.map((image) => image.publicId)
+      });
+      await Issue.findByIdAndUpdate(issue._id, {
+        $set: {
+          lastMessage: message,
+          lastMessageAt: now
+        }
+      });
+    } else {
+      newMessage = await createLocalMessage({
+        issue: issue.id,
+        order: issue.order,
+        sender: senderId,
+        senderType,
+        senderName,
+        message,
+        images: storedImages.map((image) => image.imageUrl)
+      });
+      await updateLocalIssue(issue.id, {
         lastMessage: message,
-        lastMessageAt: now
-      }
-    });
-  } else {
-    newMessage = await createLocalMessage({
-      issue: issue.id,
-      order: issue.order,
-      sender: senderId,
-      senderType,
-      senderName,
-      message,
-      images: images || []
-    });
-    await updateLocalIssue(issue.id, {
-      lastMessage: message,
-      lastMessageAt: now.toISOString()
-    });
+        lastMessageAt: now.toISOString()
+      });
+    }
+  } catch (error) {
+    await cleanupSupportImages(storedImages);
+    throw error;
   }
 
   // Emit socket events

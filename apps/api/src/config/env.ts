@@ -115,6 +115,7 @@ const resendApiKey = optionalEnv("RESEND_API_KEY");
 const emailFrom = optionalEnv("EMAIL_FROM");
 const adminEmail = optionalEnv("ADMIN_EMAIL");
 const adminPassword = optionalEnv("ADMIN_PASSWORD");
+const adminSignupCode = optionalEnv("ADMIN_SIGNUP_CODE");
 const razorpayKeyId = optionalEnv("RAZORPAY_KEY_ID");
 const razorpayKeySecret = optionalEnv("RAZORPAY_KEY_SECRET");
 const razorpayWebhookSecret = optionalEnv("RAZORPAY_WEBHOOK_SECRET");
@@ -334,6 +335,28 @@ if (isProduction) {
       "both one-time seed values together, or neither during normal API startup"
     ));
   }
+  if (!adminSignupCode) {
+    errors.push(configurationIssue(
+      "MISSING",
+      "ADMIN_SIGNUP_CODE",
+      "SECRET",
+      "a unique random setup code of at least 32 characters"
+    ));
+  } else if (!isStrongSecret(adminSignupCode)) {
+    errors.push(configurationIssue(
+      "INVALID",
+      "ADMIN_SIGNUP_CODE",
+      "SECRET",
+      "a unique random setup code of at least 32 characters with sufficient variety"
+    ));
+  } else if (configuredAuthenticationSecrets.includes(adminSignupCode)) {
+    errors.push(configurationIssue(
+      "INVALID",
+      "ADMIN_SIGNUP_CODE",
+      "SECRET",
+      "a value different from every JWT, authentication, and OTP secret"
+    ));
+  }
   const razorpayConfigurationCount = [
     razorpayKeyId,
     razorpayKeySecret,
@@ -373,7 +396,7 @@ if (isProduction) {
       "INVALID",
       "CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET",
       "SECRET",
-      "all three Cloudinary values together, or all three empty when menu uploads are disabled"
+      "all three Cloudinary values together, or all three empty when image uploads are disabled"
     ));
   }
   if (!Number.isInteger(trustProxyHops) || trustProxyHops < 1) {
@@ -420,6 +443,7 @@ export const env = {
   emailFrom,
   adminEmail: adminEmail || (isProduction ? "" : "admin@alarab.local"),
   adminPassword: adminPassword || (isProduction ? "" : "Admin@123"),
+  adminSignupCode,
   usesDemoAdminCredentials: !isProduction && (!adminEmail || !adminPassword),
   razorpayKeyId,
   razorpayKeySecret,

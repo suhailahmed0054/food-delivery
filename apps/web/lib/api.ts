@@ -1,6 +1,7 @@
 import { menuItems, type MenuItem } from "@/lib/data";
 
 const CONFIGURED_API_URL = process.env.NEXT_PUBLIC_API_URL?.trim();
+const DEFAULT_API_TIMEOUT_MS = 15_000;
 
 function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
@@ -48,6 +49,28 @@ export function getApiSocketUrl() {
   return new URL(getApiBaseUrl(), window.location.origin).origin;
 }
 
+export async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_API_TIMEOUT_MS
+) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  init.signal?.addEventListener("abort", abort, { once: true });
+  const timeout = globalThis.setTimeout(abort, timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted && !init.signal?.aborted) {
+      throw new Error("The request timed out. Check your connection and try again.");
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeout);
+    init.signal?.removeEventListener("abort", abort);
+  }
+}
+
 export type MenuItemPayload = Omit<MenuItem, "id">;
 
 export type AuthResponse = {
@@ -92,6 +115,25 @@ export type NotificationFeed = {
   notifications: InAppNotification[];
   unreadCount: number;
 };
+
+export const ADMIN_SESSION_EXPIRED_EVENT = "al-arab:admin-session-expired";
+
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
+export function isAdminAuthenticationError(error: unknown) {
+  return (
+    error instanceof ApiRequestError &&
+    (error.status === 401 || error.status === 403)
+  );
+}
 
 export type CustomerAccount = {
   id: string;
@@ -156,6 +198,7 @@ export type ReportSummary = {
     revenue: number;
     averageOrderValue: number;
     deliveryOrders: number;
+    takeawayOrders: number;
     dineInOrders: number;
     paidOrders: number;
     cancelledOrders: number;
@@ -215,7 +258,7 @@ export type OrderPayload = {
   couponCode?: string;
   paymentMethod: "cash_on_delivery" | "razorpay";
   paymentStatus: "pending" | "paid" | "failed" | "refunded";
-  orderType: "delivery" | "dine_in";
+  orderType: "delivery" | "takeaway" | "dine_in";
   tableToken?: string;
   customerName?: string;
   phone?: string;
@@ -258,7 +301,8 @@ export type ApiOrder = {
   refundStatus?: "pending" | "processed" | "failed";
   refundAmount?: number;
   razorpayRefundId?: string;
-  orderType: "delivery" | "dine_in";
+  orderType: "delivery" | "takeaway" | "dine_in";
+  isGuestOrder?: boolean;
   tableNumber?: string;
   phone?: string;
   email?: string;
@@ -308,7 +352,7 @@ export type OrderQuoteRequest = {
       addOns: string[];
     };
   }>;
-  orderType: "delivery" | "dine_in";
+  orderType: "delivery" | "takeaway" | "dine_in";
   couponCode?: string;
   phone?: string;
 };
@@ -347,7 +391,7 @@ export type OrderQuoteData = {
 export type ApiOrderTracking = {
   orderNumber: string;
   status: string;
-  orderType: "delivery" | "dine_in";
+  orderType: "delivery" | "takeaway" | "dine_in";
   tableNumber?: string;
   paymentStatus?: "pending" | "paid" | "failed" | "refunded";
   refundStatus?: "pending" | "processed" | "failed";
@@ -475,7 +519,7 @@ async function requestJson<T>(
   authScope: "admin" | "customer" = "admin"
 ) {
   const performRequest = () =>
-    fetch(`${getApiBaseUrl()}${path}`, {
+    fetchWithTimeout(`${getApiBaseUrl()}${path}`, {
       ...init,
       credentials: "include",
       headers: {
@@ -491,7 +535,7 @@ async function requestJson<T>(
     (response.status === 401 || (authScope === "admin" && response.status === 403));
 
   if (shouldRefresh) {
-    const refreshed = await fetch(`${getApiBaseUrl()}/auth/refresh`, {
+    const refreshed = await fetchWithTimeout(`${getApiBaseUrl()}/auth/refresh`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -501,7 +545,20 @@ async function requestJson<T>(
   }
 
   if (!response.ok) {
-    throw new Error(await getApiErrorMessage(response, fallback));
+    const isAdminAuthenticationFailure =
+      !isAdminAuthRequest &&
+      authScope === "admin" &&
+      (response.status === 401 || response.status === 403);
+    const message = isAdminAuthenticationFailure
+      ? "Your admin session has expired. Please sign in again."
+      : await getApiErrorMessage(response, fallback);
+    const error = new ApiRequestError(message, response.status);
+
+    if (isAdminAuthenticationFailure && typeof window !== "undefined") {
+      window.dispatchEvent(new Event(ADMIN_SESSION_EXPIRED_EVENT));
+    }
+
+    throw error;
   }
 
   if (response.status === 204) return undefined as T;
@@ -541,9 +598,26 @@ export async function loginAdmin(email: string, password: string) {
   }, "Unable to sign in to the admin dashboard");
 }
 
+export async function registerAdmin(input: {
+  name: string;
+  email: string;
+  password: string;
+  confirmPassword: string;
+  signupCode: string;
+}) {
+  if (typeof window !== "undefined") {
+    window.localStorage.removeItem("al-arab-admin-auth");
+  }
+
+  return requestJson<{ user: AuthResponse["user"] }>("/auth/admin/register", {
+    method: "POST",
+    body: JSON.stringify(input)
+  }, "Unable to create the administrator profile");
+}
+
 export async function fetchCurrentAdmin() {
   const fetchSession = () =>
-    fetch(`${getApiBaseUrl()}/auth/me`, {
+    fetchWithTimeout(`${getApiBaseUrl()}/auth/me`, {
       method: "GET",
       credentials: "include",
       cache: "no-store"
@@ -551,9 +625,11 @@ export async function fetchCurrentAdmin() {
 
   let response = await fetchSession();
   if (response.status === 401) {
-    const refreshed = await fetch(`${getApiBaseUrl()}/auth/refresh`, {
+    const refreshed = await fetchWithTimeout(`${getApiBaseUrl()}/auth/refresh`, {
       method: "POST",
-      credentials: "include"
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "admin" })
     });
     if (refreshed.ok) response = await fetchSession();
   }
@@ -565,7 +641,7 @@ export async function fetchCurrentAdmin() {
 }
 
 export async function fetchSystemHealth() {
-  const response = await fetch(`${getApiBaseUrl()}/health`, {
+  const response = await fetchWithTimeout(`${getApiBaseUrl()}/health`, {
     method: "GET",
     cache: "no-store"
   });
@@ -576,7 +652,7 @@ export async function fetchSystemHealth() {
 }
 
 export async function logoutAdmin() {
-  await fetch(`${getApiBaseUrl()}/auth/logout`, {
+  await fetchWithTimeout(`${getApiBaseUrl()}/auth/logout`, {
     method: "POST",
     credentials: "include"
   });
@@ -587,7 +663,7 @@ export async function logoutAdmin() {
 
 export async function fetchMenu() {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/menu`);
+    const response = await fetchWithTimeout(`${getApiBaseUrl()}/menu`);
     if (!response.ok) throw new Error("Menu API unavailable");
     const data = await response.json();
     if (!Array.isArray(data) || data.some((item) => !item.customization?.sizes || !item.customization?.addOns)) {
@@ -624,7 +700,7 @@ export async function uploadMenuImage(fileName: string, dataUrl: string) {
 }
 
 export async function deleteMenuItem(id: string) {
-  const response = await fetch(`${getApiBaseUrl()}/menu/${encodeURIComponent(id)}`, {
+  const response = await fetchWithTimeout(`${getApiBaseUrl()}/menu/${encodeURIComponent(id)}`, {
     method: "DELETE",
     credentials: "include"
   });
@@ -721,7 +797,7 @@ export async function updateDeliveryPerson(id: string, payload: DeliveryPersonPa
 }
 
 export async function deleteDeliveryPerson(id: string) {
-  const response = await fetch(`${getApiBaseUrl()}/staff/${encodeURIComponent(id)}`, {
+  const response = await fetchWithTimeout(`${getApiBaseUrl()}/staff/${encodeURIComponent(id)}`, {
     method: "DELETE",
     headers: getAuthHeaders(),
     credentials: "include"
@@ -925,7 +1001,7 @@ export async function claimCustomerOrders(
 }
 
 export async function logoutAccount() {
-  await fetch(`${getApiBaseUrl()}/auth/logout`, {
+  await fetchWithTimeout(`${getApiBaseUrl()}/auth/logout`, {
     method: "POST",
     credentials: "include"
   });
@@ -992,8 +1068,30 @@ export async function fetchOrderTracking(
   );
 }
 
-export async function fetchOrders() {
-  return requestJson<ApiOrder[]>("/orders", {
+export type AdminOrderPage = {
+  orders: ApiOrder[];
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+};
+
+export async function fetchOrders(options: {
+  page?: number;
+  limit?: number;
+  search?: string;
+  status?: string;
+  orderType?: "delivery" | "takeaway" | "dine_in";
+} = {}) {
+  const query = new URLSearchParams({
+    paginated: "true",
+    page: String(options.page ?? 1),
+    limit: String(options.limit ?? 25)
+  });
+  if (options.search?.trim()) query.set("search", options.search.trim());
+  if (options.status) query.set("status", options.status);
+  if (options.orderType) query.set("orderType", options.orderType);
+  return requestJson<AdminOrderPage>(`/orders?${query.toString()}`, {
     method: "GET",
     headers: getAuthHeaders()
   }, "Unable to load orders");
@@ -1013,6 +1111,13 @@ export async function assignOrderDelivery(id: string, deliveryPersonId: string) 
     headers: getAuthHeaders(),
     body: JSON.stringify({ deliveryPersonId })
   }, "Unable to assign delivery person");
+}
+
+export async function markOrderPaymentReceived(id: string) {
+  return requestJson<ApiOrder>(`/orders/${encodeURIComponent(id)}/payment-received`, {
+    method: "PATCH",
+    headers: getAuthHeaders()
+  }, "Unable to mark payment received");
 }
 
 export async function cancelOrder(id: string, reason?: string, trackingToken?: string) {

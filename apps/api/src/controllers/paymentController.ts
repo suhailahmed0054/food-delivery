@@ -66,7 +66,7 @@ type PaymentOrderRecord = {
   orderNumber: string;
   total: number;
   status: string;
-  orderType: "delivery" | "dine_in";
+  orderType: "delivery" | "takeaway" | "dine_in";
   paymentMethod?: string;
   paymentStatus?: string;
   razorpayOrderId?: string;

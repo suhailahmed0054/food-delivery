@@ -7,12 +7,14 @@ export const orderStatusValues = [
   "ready_for_pickup",
   "out_for_delivery",
   "served",
+  "collected",
   "delivered",
+  "completed",
   "cancelled"
 ] as const;
 
 export type OrderStatus = (typeof orderStatusValues)[number];
-export type OrderFulfilmentType = "delivery" | "dine_in";
+export type OrderFulfilmentType = "delivery" | "takeaway" | "dine_in";
 export type OrderStatusRole = "admin" | "kitchen";
 
 const deliveryStatusTransitions: Record<OrderStatus, readonly OrderStatus[]> = {
@@ -24,7 +26,24 @@ const deliveryStatusTransitions: Record<OrderStatus, readonly OrderStatus[]> = {
   ready_for_pickup: ["out_for_delivery", "cancelled"],
   out_for_delivery: ["delivered"],
   served: [],
+  collected: [],
   delivered: [],
+  completed: [],
+  cancelled: []
+};
+
+const takeawayStatusTransitions: Record<OrderStatus, readonly OrderStatus[]> = {
+  pending: ["accepted", "cancelled"],
+  placed: ["accepted", "cancelled"],
+  accepted: ["preparing", "cancelled"],
+  preparing: ["ready", "cancelled"],
+  ready: ["collected", "cancelled"],
+  ready_for_pickup: ["collected", "cancelled"],
+  out_for_delivery: [],
+  served: [],
+  collected: ["completed"],
+  delivered: [],
+  completed: [],
   cancelled: []
 };
 
@@ -33,11 +52,13 @@ const dineInStatusTransitions: Record<OrderStatus, readonly OrderStatus[]> = {
   placed: ["accepted", "cancelled"],
   accepted: ["preparing", "cancelled"],
   preparing: ["ready", "cancelled"],
-  ready: ["delivered"],
-  ready_for_pickup: ["delivered"],
+  ready: ["served"],
+  ready_for_pickup: ["served"],
   out_for_delivery: [],
-  served: [],
+  served: ["completed"],
+  collected: [],
   delivered: [],
+  completed: [],
   cancelled: []
 };
 
@@ -50,7 +71,9 @@ const kitchenStatusTransitions: Record<OrderStatus, readonly OrderStatus[]> = {
   ready_for_pickup: [],
   out_for_delivery: [],
   served: [],
+  collected: [],
   delivered: [],
+  completed: [],
   cancelled: []
 };
 
@@ -64,7 +87,11 @@ export function getAllowedNextOrderStatuses(
   const normalizedStatus = currentStatus as OrderStatus;
   if (role === "kitchen") return kitchenStatusTransitions[normalizedStatus];
 
-  return orderType === "dine_in"
-    ? dineInStatusTransitions[normalizedStatus]
-    : deliveryStatusTransitions[normalizedStatus];
+  if (orderType === "dine_in") {
+    return dineInStatusTransitions[normalizedStatus];
+  }
+  if (orderType === "takeaway") {
+    return takeawayStatusTransitions[normalizedStatus];
+  }
+  return deliveryStatusTransitions[normalizedStatus];
 }

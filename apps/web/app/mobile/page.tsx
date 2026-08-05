@@ -32,6 +32,12 @@ import {
 } from "@/components/RestaurantAvailabilityScreen";
 import { useWishlistStore } from "@/store/wishlist-store";
 import { useCustomer3DReveal } from "@/lib/use-customer-3d-reveal";
+import {
+  orderTypeRequiresAuthentication,
+  persistCustomerOrderType,
+  readCustomerOrderType,
+  type CustomerOrderType
+} from "@/lib/order-type-session";
 import { useRouter } from "next/navigation";
 import { getCheckoutLoginPath } from "@/lib/auth-navigation";
 import {
@@ -355,7 +361,10 @@ export default function MobileHome() {
   const [tableError, setTableError] = useState("");
   const [isTableLoading, setIsTableLoading] = useState(false);
   const [showDineInScanner, setShowDineInScanner] = useState(false);
+  const [orderType, setOrderType] = useState<CustomerOrderType>("delivery");
   const [portionPickerItem, setPortionPickerItem] = useState<MenuItem | null>(null);
+  const [pickerSpiceLevel, setPickerSpiceLevel] = useState("Regular");
+  const [pickerAddOns, setPickerAddOns] = useState<string[]>([]);
   const [cartNotice, setCartNotice] = useState<{ id: number; message: string } | null>(null);
   const [customerSummary, setCustomerSummary] = useState<CustomerSummary | null>(null);
   const [showCart, setShowCart] = useState(false);
@@ -368,6 +377,8 @@ export default function MobileHome() {
 
   const profileDrawerRef = useRef<HTMLElement | null>(null);
   const profileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const customizationDialogRef = useRef<HTMLElement | null>(null);
+  const customizationCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -394,12 +405,16 @@ export default function MobileHome() {
 
     const checkoutPath = getCheckoutPath();
     triggerHaptic("heavy");
+    if (!orderTypeRequiresAuthentication(orderType)) {
+      router.push(checkoutPath);
+      return;
+    }
     setIsCheckoutAuthLoading(true);
     try {
       await fetchCustomerAccount();
       router.push(checkoutPath);
     } catch {
-      router.push(getCheckoutLoginPath(checkoutPath));
+      router.push(getCheckoutLoginPath(checkoutPath, orderType));
     } finally {
       setIsCheckoutAuthLoading(false);
     }
@@ -423,7 +438,10 @@ export default function MobileHome() {
 
   // ── Load customer & table session ──
   useEffect(() => {
-    setTableSession(readStoredTableSession());
+    const storedTable = readStoredTableSession();
+    setTableSession(storedTable);
+    const storedOrderType = readCustomerOrderType();
+    setOrderType(storedTable ? "dine_in" : storedOrderType === "takeaway" ? "takeaway" : "delivery");
     try {
       const storedUser = window.localStorage.getItem("al-arab-user");
       const parsed = storedUser
@@ -468,6 +486,39 @@ export default function MobileHome() {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [showSearch]);
+
+  useEffect(() => {
+    if (!portionPickerItem) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    customizationCloseButtonRef.current?.focus();
+    const handleDialogKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPortionPickerItem(null);
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const focusable = customizationDialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+      );
+      if (!focusable?.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleDialogKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleDialogKeyDown);
+    };
+  }, [portionPickerItem]);
 
   // ── URL params ──
   useEffect(() => {
@@ -550,18 +601,36 @@ export default function MobileHome() {
 
   const handleTableResolved = useCallback((session: TableSession) => {
     setTableSession(session);
+    setOrderType("dine_in");
+    persistCustomerOrderType("dine_in");
     setTableError("");
   }, []);
 
   const switchToDelivery = useCallback(() => {
     clearTableSession();
     setTableSession(null);
+    setOrderType("delivery");
+    persistCustomerOrderType("delivery");
     setTableError("");
     setShowDineInScanner(false);
   }, []);
 
-  const addItemWithSize = (item: MenuItem, sizeName: string) => {
-    addItem(item, { size: sizeName, spiceLevel: getDefaultSpiceLevel(item), addOns: [] });
+  const switchToTakeaway = useCallback(() => {
+    clearTableSession();
+    setTableSession(null);
+    setOrderType("takeaway");
+    persistCustomerOrderType("takeaway");
+    setTableError("");
+    setShowDineInScanner(false);
+  }, []);
+
+  const addItemWithSize = (
+    item: MenuItem,
+    sizeName: string,
+    spiceLevel = getDefaultSpiceLevel(item),
+    addOns: string[] = []
+  ) => {
+    addItem(item, { size: sizeName, spiceLevel, addOns });
     setCartNotice({
       id: Date.now(),
       message: `${item.name} · ${sizeName} added to cart`,
@@ -571,7 +640,13 @@ export default function MobileHome() {
 
   const handleAddItem = (item: MenuItem) => {
     const sizeOptions = getSizeOptions(item);
-    if (sizeOptions.length > 1) {
+    if (
+      sizeOptions.length > 1 ||
+      (item.customization?.spiceLevels?.length ?? 0) > 1 ||
+      (item.customization?.addOns?.length ?? 0) > 0
+    ) {
+      setPickerSpiceLevel(getDefaultSpiceLevel(item));
+      setPickerAddOns([]);
       setPortionPickerItem(item);
       return;
     }
@@ -979,20 +1054,20 @@ export default function MobileHome() {
       {!isTableLoading && (
         <section aria-label="Choose order type" className="mx-3 mb-2 mt-3 min-[390px]:mx-4 min-[390px]:mt-4">
           <div className="liquid-segmented rounded-[18px] border border-white/10 bg-white/[0.03] backdrop-blur-md p-1 shadow-sm">
-            <div className="grid grid-cols-2 gap-1">
+            <div className="grid grid-cols-3 gap-1">
               <button
                 type="button"
-                aria-pressed={!tableSession}
+                aria-pressed={orderType === "delivery"}
                 onClick={switchToDelivery}
                 className={`liquid-segment mobile-order-type-button flex min-h-[56px] min-w-0 items-center gap-2 rounded-[14px] px-2.5 text-left transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 min-[390px]:gap-2.5 min-[390px]:px-3 ${
-                  !tableSession
+                  orderType === "delivery"
                     ? "border border-primary/30 bg-primary/20 backdrop-blur-xl text-primary shadow-[0_4px_16px_rgba(234,179,8,0.2)]"
                     : "border border-transparent text-white/50 hover:bg-white/[0.03] hover:text-white/70"
                 }`}
               >
                 <span
                   className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition min-[390px]:h-9 min-[390px]:w-9 ${
-                    !tableSession
+                    orderType === "delivery"
                       ? "bg-primary/20 text-primary"
                       : "bg-white/5 text-white/60"
                   }`}
@@ -1005,7 +1080,7 @@ export default function MobileHome() {
                   </span>
                   <span
                     className={`mt-1 block truncate text-[9px] font-bold leading-none ${
-                      !tableSession ? "text-primary/70" : "text-white/30"
+                      orderType === "delivery" ? "text-primary/70" : "text-white/30"
                     }`}
                   >
                     Order to your door
@@ -1015,17 +1090,44 @@ export default function MobileHome() {
 
               <button
                 type="button"
-                aria-pressed={Boolean(tableSession)}
+                aria-pressed={orderType === "takeaway"}
+                onClick={switchToTakeaway}
+                className={`liquid-segment mobile-order-type-button flex min-h-[56px] min-w-0 items-center gap-1.5 rounded-[14px] px-2 text-left transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 min-[390px]:gap-2 min-[390px]:px-2.5 ${
+                  orderType === "takeaway"
+                    ? "border border-primary/30 bg-primary/20 backdrop-blur-xl text-primary shadow-[0_4px_16px_rgba(234,179,8,0.2)]"
+                    : "border border-transparent text-white/50 hover:bg-white/[0.03] hover:text-white/70"
+                }`}
+              >
+                <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition ${
+                  orderType === "takeaway" ? "bg-primary/20 text-primary" : "bg-white/5 text-white/60"
+                }`}>
+                  <Package size={16} aria-hidden="true" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block whitespace-nowrap text-[11px] font-black leading-none min-[390px]:text-[12px]">
+                    Takeaway
+                  </span>
+                  <span className={`mt-1 block truncate text-[8px] font-bold leading-none min-[390px]:text-[9px] ${
+                    orderType === "takeaway" ? "text-primary/70" : "text-white/30"
+                  }`}>
+                    Pick up
+                  </span>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                aria-pressed={orderType === "dine_in"}
                 onClick={() => setShowDineInScanner(true)}
                 className={`liquid-segment mobile-order-type-button flex min-h-[56px] min-w-0 items-center gap-2 rounded-[14px] px-2.5 text-left transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 min-[390px]:gap-2.5 min-[390px]:px-3 ${
-                  tableSession
+                  orderType === "dine_in"
                     ? "border border-primary/30 bg-primary/20 backdrop-blur-xl text-primary shadow-[0_4px_16px_rgba(234,179,8,0.2)]"
                     : "border border-transparent text-white/50 hover:bg-white/[0.03] hover:text-white/70"
                 }`}
               >
                 <span
                   className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition min-[390px]:h-9 min-[390px]:w-9 ${
-                    tableSession
+                    orderType === "dine_in"
                       ? "bg-primary/20 text-primary"
                       : "bg-white/5 text-white/60"
                   }`}
@@ -1038,7 +1140,7 @@ export default function MobileHome() {
                   </span>
                   <span
                     className={`mt-1 block truncate text-[9px] font-bold leading-none ${
-                      tableSession ? "text-primary/70" : "text-white/30"
+                      orderType === "dine_in" ? "text-primary/70" : "text-white/30"
                     }`}
                   >
                     {tableSession?.label ?? "Scan table QR"}
@@ -1313,13 +1415,13 @@ export default function MobileHome() {
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     triggerHaptic("medium");
-                                    setPortionPickerItem(item);
+                                    handleAddItem(item);
                                   }}
                                   className="liquid-action liquid-action-gold relative flex min-h-11 min-w-24 shrink-0 items-center justify-center whitespace-nowrap rounded-xl border border-primary/40 bg-primary/20 px-3 text-[9px] font-black text-primary shadow-[0_4px_12px_rgba(234,179,8,0.15)] backdrop-blur-xl transition-all hover:bg-primary/30 active:scale-95 sm:min-w-28 sm:text-[10px]"
                                 >
                                   {itemQuantity > 0
                                     ? `${itemQuantity} IN CART`
-                                    : "CHOOSE SIZE"}
+                                    : "CHOOSE OPTIONS"}
                                 </button>
                               );
                             }
@@ -1556,33 +1658,98 @@ export default function MobileHome() {
           />
 
           {/* Sheet */}
-          <div className="liquid-bottom-sheet relative rounded-t-[2.5rem] border-t border-white/10 bg-[#111111]/90 backdrop-blur-3xl p-6 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.5)] animate-in slide-in-from-bottom duration-300">
+          <section
+            ref={customizationDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="customization-title"
+            className="liquid-bottom-sheet relative max-h-[88vh] overflow-y-auto rounded-t-[2.5rem] border-t border-white/10 bg-[#111111]/90 p-6 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.5)] backdrop-blur-3xl animate-in slide-in-from-bottom duration-300"
+          >
             {/* Drag handle */}
             <div className="absolute top-3 left-1/2 -translate-x-1/2 w-10 h-1 rounded-full bg-white/20" />
 
             <div className="mb-7 mt-2 flex items-start justify-between gap-4">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-widest text-primary">
-                  Choose Portion
+                  Customize dish
                 </p>
-                <h2 className="mt-1 text-2xl font-black text-white drop-shadow-md">
+                <h2 id="customization-title" className="mt-1 text-2xl font-black text-white drop-shadow-md">
                   {portionPickerItem.name}
                 </h2>
               </div>
               <button
+                ref={customizationCloseButtonRef}
+                type="button"
                 onClick={() => setPortionPickerItem(null)}
+                aria-label="Close customization options"
                 className="liquid-icon-button flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/60 transition hover:bg-white/10 hover:text-white"
               >
                 <X size={20} />
               </button>
             </div>
 
+            {(portionPickerItem.customization?.spiceLevels?.length ?? 0) > 0 && (
+              <fieldset className="mb-5">
+                <legend className="mb-2 text-[10px] font-black uppercase tracking-widest text-white/50">
+                  Spice level
+                </legend>
+                <div className="flex flex-wrap gap-2">
+                  {portionPickerItem.customization.spiceLevels.map((spiceLevel) => (
+                    <button
+                      key={spiceLevel}
+                      type="button"
+                      aria-pressed={pickerSpiceLevel === spiceLevel}
+                      onClick={() => setPickerSpiceLevel(spiceLevel)}
+                      className={`min-h-10 rounded-xl border px-4 text-xs font-black transition ${
+                        pickerSpiceLevel === spiceLevel
+                          ? "border-primary/50 bg-primary/20 text-primary"
+                          : "border-white/10 bg-white/[0.03] text-white/60"
+                      }`}
+                    >
+                      {spiceLevel}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+            )}
+
+            {(portionPickerItem.customization?.addOns?.length ?? 0) > 0 && (
+              <fieldset className="mb-5">
+                <legend className="mb-2 text-[10px] font-black uppercase tracking-widest text-white/50">
+                  Add-ons
+                </legend>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {portionPickerItem.customization.addOns.map((addOn) => {
+                    const selected = pickerAddOns.includes(addOn.name);
+                    return (
+                      <label key={addOn.name} className="flex min-h-11 cursor-pointer items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-sm font-bold text-white/75">
+                        <span>{addOn.name} · ₹{addOn.price}</span>
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => setPickerAddOns((current) =>
+                            selected
+                              ? current.filter((name) => name !== addOn.name)
+                              : [...current, addOn.name]
+                          )}
+                          className="h-5 w-5 accent-primary"
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            )}
+
             <div className="space-y-3">
               {getSizeOptions(portionPickerItem).map((size) => {
                 const cartLine = items.find(
                   (line) =>
                     line.item.id === portionPickerItem.id &&
-                    line.customization.size === size.name
+                    line.customization.size === size.name &&
+                    line.customization.spiceLevel === pickerSpiceLevel &&
+                    [...line.customization.addOns].sort().join("|") ===
+                      [...pickerAddOns].sort().join("|")
                 );
                 const sizePrice = getSizePrice(portionPickerItem, size);
 
@@ -1631,7 +1798,12 @@ export default function MobileHome() {
                         type="button"
                         onClick={() => {
                           triggerHaptic("medium");
-                          addItemWithSize(portionPickerItem, size.name);
+                          addItemWithSize(
+                            portionPickerItem,
+                            size.name,
+                            pickerSpiceLevel,
+                            pickerAddOns
+                          );
                           setPortionPickerItem(null);
                         }}
                         className="liquid-action liquid-action-gold min-h-12 rounded-xl border border-primary/40 bg-primary/20 backdrop-blur-xl px-6 py-2 text-sm font-black text-primary shadow-[0_4px_16px_rgba(234,179,8,0.2)] transition hover:bg-primary/30 active:scale-95"
@@ -1643,7 +1815,7 @@ export default function MobileHome() {
                 );
               })}
             </div>
-          </div>
+          </section>
         </div>
       )}
 
@@ -1653,7 +1825,9 @@ export default function MobileHome() {
       {showCart && (
         <div className="fixed inset-0 z-[100] flex justify-end flex-col">
           {/* Backdrop */}
-          <div
+          <button
+            type="button"
+            aria-label="Close cart"
             className="absolute inset-0 bg-black/70 backdrop-blur-xl transition-opacity duration-300 animate-in fade-in"
             onClick={() => setShowCart(false)}
           />
@@ -1672,6 +1846,8 @@ export default function MobileHome() {
               </h2>
 
               <button
+                type="button"
+                aria-label="Close cart"
                 onClick={() => setShowCart(false)}
                 className="liquid-icon-button flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/60 transition hover:bg-white/10 hover:text-white"
               >
@@ -1718,6 +1894,7 @@ export default function MobileHome() {
                         <div className="liquid-stepper flex items-center rounded-xl p-1 border border-white/10 bg-black/50 backdrop-blur-md">
                           <button
                             type="button"
+                            aria-label={`Decrease ${cartItem.item.name} quantity`}
                             onClick={() => {
                               triggerHaptic("light");
                               setQuantity(cartItem.lineId, cartItem.quantity - 1);
@@ -1731,6 +1908,7 @@ export default function MobileHome() {
                           </span>
                           <button
                             type="button"
+                            aria-label={`Increase ${cartItem.item.name} quantity`}
                             onClick={() => {
                               triggerHaptic("light");
                               setQuantity(cartItem.lineId, cartItem.quantity + 1);
@@ -1742,6 +1920,8 @@ export default function MobileHome() {
                         </div>
 
                         <button
+                          type="button"
+                          aria-label={`Remove ${cartItem.item.name} from cart`}
                           onClick={() => {
                             triggerHaptic("medium");
                             removeItem(cartItem.lineId);

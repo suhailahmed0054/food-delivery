@@ -30,7 +30,8 @@ export type LocalOrder = {
   paymentStatus?: "pending" | "paid" | "failed" | "refunded";
   razorpayOrderId?: string;
   razorpayPaymentId?: string;
-  orderType: "delivery" | "dine_in";
+  orderType: "delivery" | "takeaway" | "dine_in";
+  isGuestOrder?: boolean;
   table?: string;
   tableNumber?: string;
   phone?: string;
@@ -160,21 +161,17 @@ export async function createLocalOrder(input: LocalOrderInput) {
 }
 
 export async function findLocalOrderByIdempotency(
-  customer: string,
   idempotencyKeyHash: string,
   storeFile = currentDataFile()
 ) {
   const orders = await listLocalOrders(storeFile);
   return orders.find(
-    (order) =>
-      order.customer === customer &&
-      order.idempotencyKeyHash === idempotencyKeyHash
+    (order) => order.idempotencyKeyHash === idempotencyKeyHash
   ) ?? null;
 }
 
 export async function createLocalOrderIdempotently(
   input: LocalOrderInput & {
-    customer: string;
     idempotencyKeyHash: string;
     idempotencyRequestHash: string;
   },
@@ -183,9 +180,7 @@ export async function createLocalOrderIdempotently(
   return withOrderMutation(storeFile, async () => {
     const orders = await listLocalOrders(storeFile);
     const existing = orders.find(
-      (order) =>
-        order.customer === input.customer &&
-        order.idempotencyKeyHash === input.idempotencyKeyHash
+      (order) => order.idempotencyKeyHash === input.idempotencyKeyHash
     );
 
     if (existing) {
@@ -218,7 +213,7 @@ export async function updateLocalOrderStatus(
 
   const currentOrder = orders[index];
   const now = new Date().toISOString();
-  const isCompleted = ["delivered", "served", "cancelled"].includes(status);
+  const isCompleted = ["delivered", "completed", "cancelled"].includes(status);
   const nextOrder: LocalOrder = {
     ...currentOrder,
     status,

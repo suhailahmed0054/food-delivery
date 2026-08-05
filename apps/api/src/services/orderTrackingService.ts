@@ -14,7 +14,7 @@ export const trackingCredentialsSchema = z.object({
 export type PublicOrderTracking = {
   orderNumber: string;
   status: string;
-  orderType: "delivery" | "dine_in";
+  orderType: "delivery" | "takeaway" | "dine_in";
   tableNumber?: string;
   paymentStatus?: "pending" | "paid" | "failed" | "refunded";
   refundStatus?: "pending" | "processed" | "failed";
@@ -94,7 +94,7 @@ export function hashOrderTrackingToken(token: string) {
 
 export function getEstimatedDeliveryAt(
   status: string,
-  orderType: "delivery" | "dine_in",
+  orderType: "delivery" | "takeaway" | "dine_in",
   from = new Date()
 ) {
   const deliveryMinutes: Record<string, number> = {
@@ -114,8 +114,20 @@ export function getEstimatedDeliveryAt(
     ready: 5,
     ready_for_pickup: 5
   };
-  const minutes =
-    (orderType === "dine_in" ? dineInMinutes : deliveryMinutes)[status];
+  const takeawayMinutes: Record<string, number> = {
+    pending: 30,
+    placed: 30,
+    accepted: 25,
+    preparing: 20,
+    ready: 5,
+    ready_for_pickup: 5
+  };
+  const schedule = orderType === "dine_in"
+    ? dineInMinutes
+    : orderType === "takeaway"
+      ? takeawayMinutes
+      : deliveryMinutes;
+  const minutes = schedule[status];
 
   return minutes === undefined
     ? undefined
@@ -144,7 +156,11 @@ export function toPublicOrderTracking(order: unknown): PublicOrderTracking {
       })
     : [];
   const status = typeof plain.status === "string" ? plain.status : "placed";
-  const orderType = plain.orderType === "dine_in" ? "dine_in" : "delivery";
+  const orderType = plain.orderType === "dine_in"
+    ? "dine_in"
+    : plain.orderType === "takeaway"
+      ? "takeaway"
+      : "delivery";
   const deliveryAgent =
     plain.deliveryAgent && typeof plain.deliveryAgent === "object"
       ? (plain.deliveryAgent as {

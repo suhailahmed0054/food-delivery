@@ -152,14 +152,52 @@ test("reusing a checkout key with changed details is rejected", async () => {
   );
 });
 
-test("MongoDB schema has a unique customer-scoped idempotency index", () => {
+test("guest dine-in idempotency does not create a fake customer", async () => {
+  const guestSubject = "guest-dine-in";
+  const guestKey = "guest-dine-in-checkout-1234567890";
+  const guestInput = {
+    ...orderInput("AR-GUEST-DINE-IN"),
+    customer: undefined,
+    isGuestOrder: true,
+    orderType: "dine_in" as const,
+    idempotencyKeyHash: hashOrderIdempotencyKey(guestSubject, guestKey),
+    idempotencyRequestHash: fingerprintOrderRequest(guestSubject, {
+      ...requestPayload,
+      orderType: "dine_in"
+    }),
+    trackingTokenHash: "b".repeat(64)
+  };
+  const created = await createLocalOrderIdempotently(guestInput, storeFile);
+  const replay = await createLocalOrderIdempotently(
+    { ...guestInput, orderNumber: "AR-GUEST-DINE-IN-RETRY" },
+    storeFile
+  );
+
+  assert.equal(created.order.customer, undefined);
+  assert.equal(created.order.isGuestOrder, true);
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.order.orderNumber, created.order.orderNumber);
+});
+
+test("guest tracking secrets are isolated by checkout key", () => {
+  const first = createIdempotentOrderTrackingToken(
+    "guest-dine-in",
+    "guest-checkout-key-111111"
+  );
+  const second = createIdempotentOrderTrackingToken(
+    "guest-dine-in",
+    "guest-checkout-key-222222"
+  );
+  assert.notEqual(first, second);
+});
+
+test("MongoDB schema has a globally unique idempotency hash index", () => {
   const index = Order.schema.indexes().find(
-    ([fields]) =>
-      fields.customer === 1 && fields.idempotencyKeyHash === 1
+    ([fields]) => fields.idempotencyKeyHash === 1
   );
 
   assert.ok(index);
   assert.equal(index[1].unique, true);
-  assert.equal(index[1].name, "unique_customer_order_idempotency");
+  assert.equal(index[1].name, "unique_order_idempotency_key");
   assert.ok(index[1].partialFilterExpression);
 });

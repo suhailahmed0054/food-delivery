@@ -548,6 +548,244 @@ This environment cleanup does not change the Section 19 beta decision. Real
 production configuration, live mobile verification, and a complete controlled
 order are still outstanding.
 
+## 21. Repository production-readiness remediation (31 July 2026)
+
+### Scope and decision
+
+This pass implemented the remaining safe repository-level recommendations from
+the full audit. It did not deploy services, change DNS, mutate production data,
+insert fake credentials, rotate provider credentials, publish an Android
+release, or claim unavailable visual/device evidence. Existing fonts, colours,
+branding and page structure were preserved.
+
+The repository is substantially safer and more operationally complete, but the
+release gate remains closed until genuine production configuration and live
+end-to-end evidence exist.
+
+### Remediation completed
+
+#### Restaurant workflows and admin operations
+
+- Added explicit delivery, takeaway and dine-in state machines. Delivery uses
+  `placed -> accepted -> preparing -> ready -> out_for_delivery -> delivered`;
+  takeaway uses `placed -> accepted -> preparing -> ready -> collected ->
+  completed`; dine-in uses `pending -> accepted -> preparing -> ready -> served
+  -> completed`.
+- Prevented reverse, skipped, terminal, cancelled and role-incompatible status
+  transitions. Delivery dispatch now requires an assigned rider.
+- Added cryptographically generated, collision-retried display order numbers.
+- Added persisted COD payment-received handling with an auditable payment row;
+  online, refunded and cancelled orders cannot be marked as cash received.
+- Added server-side admin search, status/type filters and bounded pagination
+  while retaining the legacy list response for existing consumers.
+- Released assigned delivery staff only when an order reaches a true terminal
+  state. Reporting, reviews, payment and tracking now understand takeaway,
+  collected and completed statuses.
+- Removed automatic legacy-refund mutation from every API startup. The repair is
+  now an explicit one-time `migrate-legacy-refunds` command.
+
+#### Customer ordering, privacy and accessibility
+
+- Implemented customer selection and checkout handling for delivery, takeaway
+  and dine-in without changing the visual theme.
+- Exposed the existing menu spice-level and add-on data in the customization
+  sheet and preserved size, spice and add-ons as distinct cart lines.
+- Completed dialog semantics, Escape handling, body-scroll locking, initial
+  focus and keyboard focus containment for customization; cart icon controls
+  now have accessible names.
+- Removed tracking capabilities and customer PII from persistent saved-order
+  storage. Tracking tokens are session-scoped, legacy entries migrate into the
+  current session, and saved history is bounded. Cart persistence continues to
+  contain only non-sensitive order selections.
+- Added consistent browser/API timeouts to prevent provider and application
+  requests from hanging indefinitely.
+
+#### Backend security, uploads and health
+
+- Authentication middleware now revalidates the account, role and blocked state
+  against MongoDB instead of trusting a still-valid JWT after account changes;
+  production fails closed when that check cannot be completed.
+- Support evidence is validated and uploaded to the existing Cloudinary
+  integration instead of storing Base64 blobs in MongoDB. Partial failures are
+  rolled back and text-only support remains available without Cloudinary.
+- Menu images now retain managed public IDs and safely delete replaced/deleted
+  assets only within the approved Al-Arab folders. Switching to an external URL
+  clears the obsolete managed ID.
+- Readiness now reports intentionally disabled dependencies accurately and
+  returns 503 whenever a configured MongoDB or Redis dependency is disconnected.
+- Resend and external geocoding calls have bounded timeouts.
+
+#### Android and release engineering
+
+- Added camera and coarse/fine location permissions and disabled Android
+  backups to reduce inadvertent WebView data restoration.
+- Added environment-driven Android versioning, protected release signing,
+  minification and resource shrinking. Keystores and Android IDE/build artifacts
+  are ignored.
+- Added `android:release`, which validates the production customer URL, version
+  and signing inputs before syncing and building an AAB. It does not contain or
+  print secret signing values.
+- CI now runs the API test suite and the production-runtime dependency audit.
+- Added environment, deployment, launch checklist, rollback and operational
+  documentation, and tightened the release verifier to require a clean `main`
+  commit exactly synchronized with its upstream.
+
+### Files changed
+
+The remediation changed the following source areas:
+
+- release/CI: `.github/workflows/ci.yml`, `.gitignore`, `package.json`,
+  `scripts/release-check.mjs`;
+- API configuration/scripts: `apps/api/.env.example`,
+  `apps/api/.env.production.example`, `apps/api/package.json`,
+  `apps/api/src/config/db.ts`, `apps/api/src/config/env.ts`,
+  `apps/api/src/server.ts`, `apps/api/src/scripts/verifyProduction.ts`,
+  `apps/api/src/scripts/migrateLegacyRefunds.ts`;
+- API order/security/storage: the order, menu, payment, report, review and
+  support controllers; authentication middleware; Order, MenuItem, Issue and
+  SupportMessage models; order routes; local order, pricing, status, tracking,
+  Cloudinary and email services; menu migration and workflow tests;
+- web: admin, checkout, mobile menu, customer orders, customer landing,
+  geocoding routes, location search, API client, saved orders and the new
+  order-type session helper;
+- Android: `apps/web/android/app/build.gradle`, Android manifest and
+  `apps/web/scripts/android-build.mjs`;
+- documentation: `README.md`, `docs/ENVIRONMENT_VARIABLES.md`,
+  `docs/DEPLOYMENT_GUIDE.md`, `docs/PUBLIC_LAUNCH_CHECKLIST.md`,
+  `docs/ROLLBACK_GUIDE.md`, and the existing environment, production,
+  controlled-beta and launch-runbook documents.
+
+Exact changed-file inventory (57 files):
+
+```text
+.github/workflows/ci.yml
+.gitignore
+PRODUCTION_READINESS_AUDIT.md
+README.md
+apps/api/.env.example
+apps/api/.env.production.example
+apps/api/package.json
+apps/api/src/config/db.ts
+apps/api/src/config/env.ts
+apps/api/src/controllers/menuController.ts
+apps/api/src/controllers/orderController.ts
+apps/api/src/controllers/paymentController.ts
+apps/api/src/controllers/reportController.ts
+apps/api/src/controllers/reviewController.ts
+apps/api/src/controllers/supportController.ts
+apps/api/src/middleware/auth.ts
+apps/api/src/models/Issue.ts
+apps/api/src/models/MenuItem.ts
+apps/api/src/models/Order.ts
+apps/api/src/models/SupportMessage.ts
+apps/api/src/routes/orderRoutes.ts
+apps/api/src/scripts/migrateLegacyRefunds.ts
+apps/api/src/scripts/migrateMenuImages.ts
+apps/api/src/scripts/verifyProduction.ts
+apps/api/src/server.ts
+apps/api/src/services/cloudinaryService.ts
+apps/api/src/services/emailService.ts
+apps/api/src/services/localOrderStore.ts
+apps/api/src/services/orderPricingService.ts
+apps/api/src/services/orderStatusWorkflow.ts
+apps/api/src/services/orderTrackingService.ts
+apps/api/tests/orderStatusWorkflow.test.ts
+apps/web/android/app/build.gradle
+apps/web/android/app/src/main/AndroidManifest.xml
+apps/web/app/admin/page.tsx
+apps/web/app/api/location-search/route.ts
+apps/web/app/api/reverse-geocode/route.ts
+apps/web/app/checkout/page.tsx
+apps/web/app/mobile/page.tsx
+apps/web/app/orders/page.tsx
+apps/web/app/page.tsx
+apps/web/components/DeliveryLocationSearch.tsx
+apps/web/lib/api.ts
+apps/web/lib/order-type-session.ts
+apps/web/lib/saved-orders.ts
+apps/web/package.json
+apps/web/scripts/android-build.mjs
+docs/CONTROLLED_BETA_MANUAL_VERIFICATION.md
+docs/DEPLOYMENT_GUIDE.md
+docs/ENVIRONMENT_VARIABLES.md
+docs/ENVIRONMENT_VARIABLE_AUDIT.md
+docs/LAUNCH_RUNBOOK.md
+docs/PRODUCTION_CONFIGURATION.md
+docs/PUBLIC_LAUNCH_CHECKLIST.md
+docs/ROLLBACK_GUIDE.md
+package.json
+scripts/release-check.mjs
+```
+
+### Final automated verification
+
+| Check | Result |
+|---|---|
+| Clean dependency installation | **Passed**: `npm ci --no-audit` completed and `npm ls --depth=0` is consistent |
+| API tests | **Passed: 29/29**, including OTP, email delivery contract, session cookies, rate/attempt limits, order idempotency/concurrency and all three fulfilment workflows |
+| Web lint | **Passed with zero warnings** |
+| Web and API TypeScript | **Passed** |
+| Production web/API build | **Passed** using the intended public API URL only in the command environment |
+| Runtime dependency audit | **Passed: 0 vulnerabilities** |
+| Full dependency audit | **Not green: 9 high development-only transitive `brace-expansion` findings in the ESLint chain** |
+| Patch integrity | **Passed**: `git diff --check` reported only Windows line-ending notices |
+| Android debug build | **Passed**; debug APK generated successfully |
+| Android release guard | **Passed as a guard**: refused to build without version, keystore, signing and production server inputs |
+| Actual production verification | **Correctly failed**; genuine required values are still absent and no secret values were displayed |
+| Responsive visual/device testing | **Not performed**; the connected browser was unavailable and no physical-device session was provided |
+| Complete production-like order | **Not performed**; no deployed staging environment or authorization to create external test data was available |
+
+The full audit finding is not a production-runtime package. The currently
+installed compatible ESLint/Next dependency line has no safe patched resolution;
+npm proposes a forced breaking ESLint change. That force change was deliberately
+not applied. Runtime dependencies remain at zero known vulnerabilities.
+
+### Current production-verification blockers
+
+The actual verifier currently reports these missing values without revealing
+configured secrets:
+
+- web/Vercel: `NEXT_PUBLIC_API_URL`;
+- API/Render: `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `CUSTOMER_APP_URL`,
+  `ADMIN_APP_URL`, `API_PUBLIC_URL`, and `TRUST_PROXY_HOPS`.
+
+Other locally present values passed structural checks, but that is not evidence
+that their hosted values or provider integrations work. After the missing
+values are entered in the hosting dashboards, the verifier must connect to the
+production MongoDB/optional Redis and the deployed smoke test must prove health,
+CORS and authentication-cookie behavior.
+
+Android release additionally requires `ANDROID_VERSION_CODE`,
+`ANDROID_VERSION_NAME`, `ANDROID_KEYSTORE_PATH`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`, and
+`CAPACITOR_SERVER_URL` in a protected local/CI release environment. App icon,
+splash, Play Console policy declarations and real-device permission/cookie/back
+navigation testing remain release-owner tasks.
+
+### Revised evidence-based scores
+
+| Category | Weight | Controlled beta | Public launch |
+|---|---:|---:|---:|
+| Core customer workflow | 20 | 18 | 16 |
+| Admin and order management | 15 | 14 | 12 |
+| Authentication and security | 15 | 14 | 12 |
+| Backend and database reliability | 15 | 14 | 12 |
+| Deployment and configuration | 10 | 6 | 5 |
+| Mobile responsiveness and Android | 10 | 7 | 5 |
+| Error handling and monitoring | 5 | 4 | 3 |
+| Performance | 5 | 4 | 3 |
+| Testing and maintainability | 5 | 4 | 3 |
+| **Total** | **100** | **85/100** | **71/100** |
+
+The numerical repository score does not override the release gates. Production
+configuration, deployed integration proof, the signed viewport/device matrix,
+one complete order through each enabled fulfilment flow, backup/restore evidence
+and operational monitoring must pass before real customer traffic is accepted.
+
+**NOT READY FOR CONTROLLED REAL-WORLD TESTING**
+
+**NOT READY FOR PUBLIC LAUNCH**
+
 ## 2. Evidence labels
 
 - **Tested and passed**: executed during this audit with a reproducible passing result.

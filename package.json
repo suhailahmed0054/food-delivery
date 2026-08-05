@@ -12,7 +12,9 @@
     "build": "npm run build -w apps/web && npm run build -w apps/api",
     "lint": "npm run lint -w apps/web",
     "typecheck": "npm run typecheck -w apps/web && npm run typecheck -w apps/api",
-    "verify": "npm run lint && npm run typecheck && npm run build && npm audit --audit-level=high",
+    "test": "npm run test -w apps/api",
+    "audit:runtime": "npm audit --omit=dev --audit-level=high",
+    "verify": "npm run test && npm run lint && npm run typecheck && npm run build && npm run audit:runtime",
     "smoke": "node scripts/smoke-test.mjs",
     "verify:production": "node scripts/verify-production.mjs",
     "release:check": "node scripts/release-check.mjs",
@@ -20,6 +22,7 @@
     "android:sync": "npm run android:sync -w apps/web",
     "android:dev": "npm run android:dev -w apps/web",
     "android:build": "npm run android:build -w apps/web",
+    "android:release": "npm run android:release -w apps/web",
     "android:open": "npm run android:open -w apps/web"
   },
   "devDependencies": {
@@ -42,6 +45,8 @@
       "brace-expansion": "5.0.9"
     },
     "js-yaml": "4.3.0",
+    "ip-address": "10.4.0",
+    "socket.io-parser": "4.2.7",
     "postcss": "$postcss",
     "next": {
       "sharp": "0.35.0"

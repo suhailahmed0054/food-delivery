@@ -9,6 +9,7 @@ import { type Category, type MenuItem } from "@/lib/data";
 import { buildDeliveryWhatsAppMessage } from "@/lib/delivery-whatsapp";
 import { NotificationCenter } from "@/components/NotificationCenter";
 import {
+  ADMIN_SESSION_EXPIRED_EVENT,
   assignOrderDelivery,
   fetchCurrentAdmin,
   fetchCustomer,
@@ -26,7 +27,9 @@ import {
   fetchMenu,
   fetchOrders,
   fetchRestaurantTables,
+  isAdminAuthenticationError,
   logoutAdmin,
+  markOrderPaymentReceived,
   regenerateRestaurantTableQr,
   setRestaurantTableActive,
   updateDeliveryPerson,
@@ -101,6 +104,72 @@ const FALLBACK_MENU_IMAGE =
 const ORDER_ALERTS_STORAGE_KEY = "al-arab-admin-order-alerts";
 const ORDER_ALERT_AUDIO_SRC = "/sounds/order-alert.mp3";
 const ORDER_ALERT_PLAYBACK_SECONDS = 2;
+
+type SettingsNumericField = "deliveryFee" | "taxRate" | "minimumOrder";
+type SettingsNumericInputs = Record<SettingsNumericField, string>;
+type SettingsNumericErrors = Partial<Record<SettingsNumericField, string>>;
+
+const settingsNumericLimits: Record<
+  SettingsNumericField,
+  { label: string; max: number }
+> = {
+  deliveryFee: { label: "Delivery fee", max: 10_000 },
+  taxRate: { label: "Tax rate", max: 100 },
+  minimumOrder: { label: "Minimum order", max: 100_000 }
+};
+
+function settingsNumericInputsFromData(
+  settings: RestaurantSettingsData
+): SettingsNumericInputs {
+  return {
+    deliveryFee: String(settings.deliveryFee),
+    taxRate: String(Number((settings.taxRate * 100).toFixed(2))),
+    minimumOrder: String(settings.minimumOrder)
+  };
+}
+
+function validateSettingsNumericInput(
+  field: SettingsNumericField,
+  rawValue: string
+) {
+  const value = rawValue.trim();
+  const { label, max } = settingsNumericLimits[field];
+
+  if (!value) return { error: `${label} is required.` };
+  if (!/^\d+(?:\.\d*)?$/.test(value)) {
+    return { error: `${label} must be a non-negative number.` };
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return { error: `${label} must be a valid finite number.` };
+  }
+  if (parsed < 0 || parsed > max) {
+    return { error: `${label} must be between 0 and ${max}.` };
+  }
+
+  return { value: field === "taxRate" ? parsed / 100 : parsed };
+}
+
+function parseSettingsNumericInputs(inputs: SettingsNumericInputs) {
+  const values = {} as Pick<
+    RestaurantSettingsData,
+    SettingsNumericField
+  >;
+  const errors: SettingsNumericErrors = {};
+
+  (Object.keys(settingsNumericLimits) as SettingsNumericField[]).forEach(
+    (field) => {
+      const result = validateSettingsNumericInput(field, inputs[field]);
+      if (result.error) errors[field] = result.error;
+      else values[field] = result.value as number;
+    }
+  );
+
+  return Object.keys(errors).length > 0
+    ? { errors, values: null }
+    : { errors, values };
+}
 
 type OrderAlertPlayer = {
   audio: HTMLAudioElement | null;
@@ -226,6 +295,7 @@ type AdminOrder = {
   paymentMethod?: unknown;
   paymentStatus?: unknown;
   orderType?: unknown;
+  isGuestOrder?: boolean;
   tableNumber?: unknown;
   table?: unknown;
   status: string;
@@ -252,7 +322,9 @@ function formatOrderStatus(status: string) {
     ready_for_pickup: "Ready",
     out_for_delivery: "Out for Delivery",
     served: "Served",
+    collected: "Collected",
     delivered: "Delivered",
+    completed: "Completed",
     cancelled: "Cancelled"
   };
   return statusLabels[status] ?? status;
@@ -279,6 +351,7 @@ function normalizeApiOrder(order: ApiOrder): AdminOrder {
     paymentMethod: order.paymentMethod,
     paymentStatus: order.paymentStatus,
     orderType: order.orderType,
+    isGuestOrder: order.isGuestOrder,
     tableNumber: order.tableNumber,
     status: formatOrderStatus(order.status),
     cancelledBy: order.cancelledBy,
@@ -414,22 +487,34 @@ function isDineInOrder(order: AdminOrder) {
   return order.orderType === "dine_in" || Boolean(getOrderTableNumber(order));
 }
 
-function OrderTypeBadge({ dineIn }: { dineIn: boolean }) {
+function isTakeawayOrder(order: AdminOrder) {
+  return order.orderType === "takeaway";
+}
+
+function OrderTypeBadge({ order }: { order: AdminOrder }) {
+  const dineIn = isDineInOrder(order);
+  const takeaway = isTakeawayOrder(order);
   return (
     <span className={`inline-flex w-fit items-center rounded-md border px-2.5 py-1 text-xs font-black ${
       dineIn
         ? "border-amber-500/30 bg-amber-500/10 text-amber-500"
+        : takeaway
+          ? "border-primary/30 bg-primary/10 text-primary"
         : "border-blue-500/30 bg-blue-500/10 text-blue-400"
     }`}>
-      {dineIn ? "Dine-in" : "Delivery"}
+      {dineIn ? "Dine-in" : takeaway ? "Takeaway" : "Delivery"}
     </span>
   );
 }
 
 function getOrderProcessStatuses(order: AdminOrder) {
-  return isDineInOrder(order)
-    ? ["Pending", "Accepted", "Preparing", "Ready", "Delivered"]
-    : ["Placed", "Accepted", "Preparing", "Ready", "Out for Delivery", "Delivered"];
+  if (isDineInOrder(order)) {
+    return ["Pending", "Accepted", "Preparing", "Ready", "Served", "Completed"];
+  }
+  if (isTakeawayOrder(order)) {
+    return ["Placed", "Accepted", "Preparing", "Ready", "Collected", "Completed"];
+  }
+  return ["Placed", "Accepted", "Preparing", "Ready", "Out for Delivery", "Delivered"];
 }
 
 function getOrderItemsSummary(order: AdminOrder) {
@@ -464,13 +549,30 @@ function getAdminNextOrderStatuses(order: AdminOrder) {
         placed: ["Accepted", "Cancelled"],
         accepted: ["Preparing", "Cancelled"],
         preparing: ["Ready", "Cancelled"],
-        ready: ["Delivered"],
-        ready_for_pickup: ["Delivered"],
-        served: [],
+        ready: ["Served"],
+        ready_for_pickup: ["Served"],
+        served: ["Completed"],
+        collected: [],
         delivered: [],
+        completed: [],
         cancelled: []
       }
-    : {
+    : isTakeawayOrder(order)
+      ? {
+        pending: ["Accepted", "Cancelled"],
+        placed: ["Accepted", "Cancelled"],
+        accepted: ["Preparing", "Cancelled"],
+        preparing: ["Ready", "Cancelled"],
+        ready: ["Collected", "Cancelled"],
+        ready_for_pickup: ["Collected", "Cancelled"],
+        out_for_delivery: [],
+        served: [],
+        collected: ["Completed"],
+        delivered: [],
+        completed: [],
+        cancelled: []
+      }
+      : {
         pending: ["Accepted", "Cancelled"],
         placed: ["Accepted", "Cancelled"],
         accepted: ["Preparing", "Cancelled"],
@@ -478,10 +580,20 @@ function getAdminNextOrderStatuses(order: AdminOrder) {
         ready: ["Out for Delivery", "Cancelled"],
         ready_for_pickup: ["Out for Delivery", "Cancelled"],
         out_for_delivery: ["Delivered"],
+        served: [],
+        collected: [],
         delivered: [],
+        completed: [],
         cancelled: []
       };
-  return transitions[status as keyof typeof transitions] ?? [];
+  const next = transitions[status as keyof typeof transitions] ?? [];
+  if (
+    order.orderType === "delivery" &&
+    !order.deliveryAgent?.staffId
+  ) {
+    return next.filter((candidate) => candidate !== "Out for Delivery");
+  }
+  return next;
 }
 
 function escapeReceiptHtml(value: unknown) {
@@ -517,7 +629,12 @@ function getPrintableOrderItems(order: AdminOrder) {
 
 function getOrderPaymentLabel(order: AdminOrder) {
   if (order.paymentMethod === "cash_on_delivery") {
-    return isDineInOrder(order) ? "Pay at table" : "COD";
+    if (order.paymentStatus === "paid") return "Cash received";
+    return isDineInOrder(order)
+      ? "Pay at table"
+      : isTakeawayOrder(order)
+        ? "Pay at pickup"
+        : "COD";
   }
   if (order.paymentMethod === "razorpay") {
     return order.paymentStatus === "paid" ? "Paid via Razorpay" : "Razorpay payment pending";
@@ -542,7 +659,7 @@ function formatAdminDate(value?: string) {
 }
 
 function isOrderTimerComplete(status: string) {
-  return ["delivered", "served", "cancelled"].includes(
+  return ["delivered", "served", "collected", "completed", "cancelled"].includes(
     status.trim().toLowerCase()
   );
 }
@@ -629,6 +746,7 @@ function OrderElapsedTimer({ order }: { order: AdminOrder }) {
 
 function getOrderLocation(order: AdminOrder, tableNumber: string) {
   if (tableNumber) return `Dine-in table ${tableNumber}`;
+  if (order.orderType === "takeaway") return "Restaurant pickup";
   return getOrderText(order?.address, "Delivery address not added");
 }
 
@@ -674,15 +792,35 @@ export default function AdminDashboard() {
   const [orders, setOrders] = useState<AdminOrder[]>([]);
   const [ordersError, setOrdersError] = useState("");
   const [ordersNotice, setOrdersNotice] = useState("");
+  const [orderPage, setOrderPage] = useState(1);
+  const [orderTotalPages, setOrderTotalPages] = useState(1);
+  const [orderTotal, setOrderTotal] = useState(0);
+  const [orderSearchInput, setOrderSearchInput] = useState("");
+  const [orderSearch, setOrderSearch] = useState("");
+  const [orderStatusFilter, setOrderStatusFilter] = useState("");
+  const [orderTypeFilter, setOrderTypeFilter] = useState<"" | "delivery" | "takeaway" | "dine_in">("");
   const [isOrdersRefreshing, setIsOrdersRefreshing] = useState(false);
   const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
   const [updatingOrderStatus, setUpdatingOrderStatus] = useState<string | null>(null);
+  const [paymentOrderId, setPaymentOrderId] = useState<string | null>(null);
   const [orderAlertsEnabled, setOrderAlertsEnabled] = useState(false);
   const [orderAlertMessage, setOrderAlertMessage] = useState("");
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
   const knownOrderStatusesRef = useRef<Map<string, string>>(new Map());
   const hasLoadedOrdersRef = useRef(false);
   const ordersRefreshRequestRef = useRef(0);
+  const orderQueryRef = useRef({
+    page: orderPage,
+    search: orderSearch,
+    status: orderStatusFilter,
+    orderType: orderTypeFilter
+  });
+  orderQueryRef.current = {
+    page: orderPage,
+    search: orderSearch,
+    status: orderStatusFilter,
+    orderType: orderTypeFilter
+  };
   const orderAlertsEnabledRef = useRef(false);
   const orderAlertPlayerRef = useRef<OrderAlertPlayer>({
     audio: null,
@@ -738,6 +876,14 @@ export default function AdminDashboard() {
   const [reportError, setReportError] = useState("");
   const [settingsData, setSettingsData] =
     useState<RestaurantSettingsData | null>(null);
+  const [settingsNumericInputs, setSettingsNumericInputs] =
+    useState<SettingsNumericInputs>({
+      deliveryFee: "",
+      taxRate: "",
+      minimumOrder: ""
+    });
+  const [settingsNumericErrors, setSettingsNumericErrors] =
+    useState<SettingsNumericErrors>({});
   const [isSettingsLoading, setIsSettingsLoading] = useState(true);
   const [isSettingsSaving, setIsSettingsSaving] = useState(false);
   const [isRestaurantStatusSaving, setIsRestaurantStatusSaving] = useState(false);
@@ -781,14 +927,26 @@ export default function AdminDashboard() {
     }
   };
 
-  const refreshOrders = async (showLoading = false) => {
+  const refreshOrders = useCallback(async (
+    showLoading = false,
+    override?: Partial<typeof orderQueryRef.current>
+  ) => {
     const requestId = ++ordersRefreshRequestRef.current;
     if (showLoading) setIsOrdersRefreshing(true);
     setOrdersError("");
     try {
-      const apiOrders = await fetchOrders();
+      const query = { ...orderQueryRef.current, ...override };
+      const result = await fetchOrders({
+        page: query.page,
+        limit: 25,
+        search: query.search,
+        status: query.status || undefined,
+        orderType: query.orderType || undefined
+      });
       if (requestId !== ordersRefreshRequestRef.current) return;
-      const nextOrders = apiOrders.map(normalizeApiOrder);
+      const nextOrders = result.orders.map(normalizeApiOrder);
+      setOrderTotal(result.total);
+      setOrderTotalPages(result.totalPages);
 
       const newOrderCount = hasLoadedOrdersRef.current
         ? nextOrders.filter((order) => !knownOrderIdsRef.current.has(order.id)).length
@@ -840,6 +998,12 @@ export default function AdminDashboard() {
       }
     } catch (error) {
       if (requestId !== ordersRefreshRequestRef.current) return;
+      if (isAdminAuthenticationError(error)) {
+        setOrdersError("");
+        setAuthStatus("unauthorized");
+        router.replace("/admin/login");
+        return;
+      }
       console.error("Unable to refresh admin orders", error);
       setOrdersError(
         error instanceof Error
@@ -849,7 +1013,7 @@ export default function AdminDashboard() {
     } finally {
       if (showLoading) setIsOrdersRefreshing(false);
     }
-  };
+  }, [router]);
 
   const toggleOrderAlerts = async () => {
     const nextEnabled = !orderAlertsEnabledRef.current;
@@ -931,7 +1095,10 @@ export default function AdminDashboard() {
     setIsSettingsLoading(true);
     setSettingsError("");
     try {
-      setSettingsData(await fetchRestaurantSettings());
+      const settings = await fetchRestaurantSettings();
+      setSettingsData(settings);
+      setSettingsNumericInputs(settingsNumericInputsFromData(settings));
+      setSettingsNumericErrors({});
     } catch (error) {
       setSettingsError(
         error instanceof Error ? error.message : "Unable to load settings"
@@ -957,6 +1124,24 @@ export default function AdminDashboard() {
       });
     return () => {
       cancelled = true;
+    };
+  }, [router]);
+
+  useEffect(() => {
+    const handleExpiredAdminSession = () => {
+      setAuthStatus("unauthorized");
+      router.replace("/admin/login");
+    };
+
+    window.addEventListener(
+      ADMIN_SESSION_EXPIRED_EVENT,
+      handleExpiredAdminSession
+    );
+    return () => {
+      window.removeEventListener(
+        ADMIN_SESSION_EXPIRED_EVENT,
+        handleExpiredAdminSession
+      );
     };
   }, [router]);
 
@@ -1079,7 +1264,7 @@ export default function AdminDashboard() {
       window.clearInterval(pollOrders);
       window.removeEventListener("storage", handleStorageChange);
     };
-  }, [authStatus]);
+  }, [authStatus, refreshOrders]);
 
   const handleAssignSupportIssue = async (issueId: string) => {
     setSupportActionId(issueId);
@@ -1139,7 +1324,7 @@ export default function AdminDashboard() {
       );
       void refreshOrders();
       void refreshDashboard();
-      if (["Delivered", "Cancelled"].includes(normalizedUpdatedOrder.status)) {
+      if (["Delivered", "Completed", "Cancelled"].includes(normalizedUpdatedOrder.status)) {
         void refreshDeliveryPeople();
       }
     } catch (error) {
@@ -1156,6 +1341,33 @@ export default function AdminDashboard() {
     } finally {
       setUpdatingOrderId(null);
       setUpdatingOrderStatus(null);
+    }
+  };
+
+  const handleMarkPaymentReceived = async (order: AdminOrder) => {
+    const apiOrderId = order._id || order.orderNumber || order.id;
+    setOrdersError("");
+    setOrdersNotice("");
+    setPaymentOrderId(order.id);
+    try {
+      const updated = normalizeApiOrder(
+        await markOrderPaymentReceived(apiOrderId)
+      );
+      setOrders((current) => current.map((item) =>
+        item.id === order.id ? updated : item
+      ));
+      setOrdersNotice(`${updated.orderNumber ?? updated.id} payment was marked received.`);
+      void refreshDashboard();
+    } catch (error) {
+      console.error("Unable to mark order payment received", {
+        orderId: apiOrderId,
+        error
+      });
+      setOrdersError(
+        error instanceof Error ? error.message : "Unable to update payment status"
+      );
+    } finally {
+      setPaymentOrderId(null);
     }
   };
 
@@ -1906,12 +2118,28 @@ export default function AdminDashboard() {
   const handleSaveSettings = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!settingsData) return;
+    const parsedNumericInputs = parseSettingsNumericInputs(
+      settingsNumericInputs
+    );
+    if (!parsedNumericInputs.values) {
+      setSettingsNumericErrors(parsedNumericInputs.errors);
+      setSettingsError("Correct the highlighted checkout values before saving.");
+      setSettingsNotice("");
+      return;
+    }
+
+    const nextSettings = {
+      ...settingsData,
+      ...parsedNumericInputs.values
+    };
     setIsSettingsSaving(true);
     setSettingsError("");
     setSettingsNotice("");
     try {
-      const updated = await updateRestaurantSettings(settingsData);
+      const updated = await updateRestaurantSettings(nextSettings);
       setSettingsData(updated);
+      setSettingsNumericInputs(settingsNumericInputsFromData(updated));
+      setSettingsNumericErrors({});
       setSettingsNotice("Restaurant settings were saved.");
     } catch (error) {
       setSettingsError(
@@ -2045,7 +2273,6 @@ export default function AdminDashboard() {
                   <tbody className="divide-y divide-border">
                     {orders.slice(0, 5).map((order) => {
                       const tableNumber = getOrderTableNumber(order);
-                      const dineIn = isDineInOrder(order);
 
                       return (
                       <tr key={order.id} className="hover:bg-foreground/[0.02] transition-colors">
@@ -2053,7 +2280,7 @@ export default function AdminDashboard() {
                           <div className="flex flex-col gap-2">
                             <span>{order.id}</span>
                             <div className="flex flex-wrap gap-2">
-                              <OrderTypeBadge dineIn={dineIn} />
+                              <OrderTypeBadge order={order} />
                               <TableBadge tableNumber={tableNumber} />
                             </div>
                           </div>
@@ -2135,17 +2362,82 @@ export default function AdminDashboard() {
               </p>
             )}
 
+            <form
+              className="grid gap-3 rounded-2xl border border-border bg-card p-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto]"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const nextSearch = orderSearchInput.trim();
+                setOrderSearch(nextSearch);
+                setOrderPage(1);
+                void refreshOrders(true, { page: 1, search: nextSearch });
+              }}
+            >
+              <label className="relative min-w-0">
+                <span className="sr-only">Search orders</span>
+                <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
+                <input
+                  value={orderSearchInput}
+                  onChange={(event) => setOrderSearchInput(event.target.value)}
+                  placeholder="Order, customer, phone or email"
+                  className="min-h-11 w-full rounded-xl border border-border bg-background pl-10 pr-3 text-sm text-foreground outline-none focus:border-primary"
+                />
+              </label>
+              <select
+                aria-label="Filter orders by status"
+                value={orderStatusFilter}
+                onChange={(event) => {
+                  const status = event.target.value;
+                  setOrderStatusFilter(status);
+                  setOrderPage(1);
+                  void refreshOrders(true, { page: 1, status });
+                }}
+                className="min-h-11 rounded-xl border border-border bg-background px-3 text-sm font-bold text-foreground outline-none focus:border-primary"
+              >
+                <option value="">All statuses</option>
+                {[
+                  "pending", "placed", "accepted", "preparing", "ready",
+                  "ready_for_pickup", "out_for_delivery", "served", "collected",
+                  "delivered", "completed", "cancelled"
+                ].map((status) => (
+                  <option key={status} value={status}>{formatOrderStatus(status)}</option>
+                ))}
+              </select>
+              <select
+                aria-label="Filter orders by type"
+                value={orderTypeFilter}
+                onChange={(event) => {
+                  const orderType = event.target.value as typeof orderTypeFilter;
+                  setOrderTypeFilter(orderType);
+                  setOrderPage(1);
+                  void refreshOrders(true, { page: 1, orderType });
+                }}
+                className="min-h-11 rounded-xl border border-border bg-background px-3 text-sm font-bold text-foreground outline-none focus:border-primary"
+              >
+                <option value="">All order types</option>
+                <option value="delivery">Delivery</option>
+                <option value="takeaway">Takeaway</option>
+                <option value="dine_in">Dine-in</option>
+              </select>
+              <button
+                type="submit"
+                className="min-h-11 rounded-xl bg-primary px-5 text-sm font-black text-primary-foreground"
+              >
+                Search
+              </button>
+            </form>
+
             <div className="grid gap-4">
               {orders.map((order) => {
                 const tableNumber = getOrderTableNumber(order);
                 const dineIn = isDineInOrder(order);
+                const deliveryOrder = order.orderType === "delivery" && !dineIn;
                 const customerName = getOrderText(order.customer, "Guest customer");
                 const customerPhone = getOrderText(order.phone, "Phone not added");
                 const deliveryLocation = getOrderLocation(order, tableNumber);
                 const deliveryTime = getOrderText(order.deliveryTime, "ASAP");
                 const instructions = getOrderText(order.instructions, "");
                 const isCancelled = order.status === "Cancelled";
-                const isCompleted = isCancelled || order.status === "Delivered";
+                const isCompleted = ["Cancelled", "Delivered", "Completed"].includes(order.status);
                 const eligibleDeliveryPeople = deliveryPeople.filter(
                   (person) =>
                     person.status === "available" ||
@@ -2158,8 +2450,13 @@ export default function AdminDashboard() {
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <h4 className="font-bold text-lg text-foreground">{order.id}</h4>
-                      <OrderTypeBadge dineIn={dineIn} />
+                      <OrderTypeBadge order={order} />
                       <TableBadge tableNumber={tableNumber} />
+                      {order.isGuestOrder && (
+                        <span className="rounded-md border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-bold text-primary">
+                          Guest
+                        </span>
+                      )}
                       <span className={`px-2.5 py-0.5 rounded-md text-xs font-bold border ${getStatusColor(order.status)}`}>
                         {order.status}
                       </span>
@@ -2185,7 +2482,11 @@ export default function AdminDashboard() {
                       <div className="rounded-xl border border-border bg-background/60 p-3">
                         <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-muted-foreground">
                           <MapPin size={14} className="text-primary" />
-                          {dineIn ? "Table Service" : "Delivery Location"}
+                          {dineIn
+                            ? "Table Service"
+                            : deliveryOrder
+                              ? "Delivery Location"
+                              : "Pickup"}
                         </div>
                         <p className="mt-2 line-clamp-2 text-sm font-bold text-foreground">{deliveryLocation}</p>
                         <p className="mt-1 flex items-center gap-2 text-xs font-semibold text-muted-foreground">
@@ -2202,7 +2503,7 @@ export default function AdminDashboard() {
                     )}
                     <p className="text-xs font-bold text-foreground mt-2">Total: <span className="text-primary">₹{order.total}</span> • {getOrderPaymentLabel(order)}</p>
 
-                    {!dineIn && (
+                    {deliveryOrder && (
                       <section className="mt-4 rounded-xl border border-primary/20 bg-primary/[0.06] p-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div className="flex min-w-0 items-center gap-3">
@@ -2323,6 +2624,21 @@ export default function AdminDashboard() {
                         <ReceiptText size={14} />
                         Print bill
                       </button>
+                      {order.paymentMethod === "cash_on_delivery" &&
+                        order.paymentStatus !== "paid" &&
+                        !isCancelled && (
+                          <button
+                            type="button"
+                            disabled={paymentOrderId === order.id}
+                            onClick={() => void handleMarkPaymentReceived(order)}
+                            className="mt-2 flex min-h-9 w-full items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-black text-emerald-400 transition-all hover:bg-emerald-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 disabled:cursor-wait disabled:opacity-60"
+                          >
+                            <CheckCircle2 size={14} />
+                            {paymentOrderId === order.id
+                              ? "Updating..."
+                              : "Payment received"}
+                          </button>
+                        )}
                       <button
                         type="button"
                         disabled={isCancelled || !getAdminNextOrderStatuses(order).includes("Cancelled") || updatingOrderId === order.id}
@@ -2352,6 +2668,37 @@ export default function AdminDashboard() {
               {orders.length === 0 && (
                 <div className="text-center py-20 text-muted-foreground">No live orders found. Go to the mobile app and place one!</div>
               )}
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3 text-sm">
+              <span className="text-muted-foreground">
+                {orderTotal} order{orderTotal === 1 ? "" : "s"} · Page {orderPage} of {orderTotalPages}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={orderPage <= 1 || isOrdersRefreshing}
+                  onClick={() => {
+                    const page = Math.max(1, orderPage - 1);
+                    setOrderPage(page);
+                    void refreshOrders(true, { page });
+                  }}
+                  className="min-h-10 rounded-xl border border-border px-4 font-bold text-foreground disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  disabled={orderPage >= orderTotalPages || isOrdersRefreshing}
+                  onClick={() => {
+                    const page = Math.min(orderTotalPages, orderPage + 1);
+                    setOrderPage(page);
+                    void refreshOrders(true, { page });
+                  }}
+                  className="min-h-10 rounded-xl border border-border px-4 font-bold text-foreground disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
             </div>
           </div>
         );
@@ -3746,7 +4093,10 @@ export default function AdminDashboard() {
                           prefix: "₹",
                           step: "1"
                         }
-                      ].map((field) => (
+                      ].map((field) => {
+                        const errorId = `settings-${field.key}-error`;
+                        const fieldError = settingsNumericErrors[field.key];
+                        return (
                         <label key={field.key}>
                           <span className="mb-1.5 block text-xs font-black uppercase tracking-wider text-muted-foreground">
                             {field.label}
@@ -3761,27 +4111,54 @@ export default function AdminDashboard() {
                               required
                               type="number"
                               min={0}
-                              max={field.key === "taxRate" ? 100 : 100000}
+                              max={settingsNumericLimits[field.key].max}
                               step={field.step}
-                              value={
-                                field.key === "taxRate"
-                                  ? Number(
-                                      (settingsData.taxRate * 100).toFixed(2)
-                                    )
-                                  : settingsData[field.key]
-                              }
-                              onChange={(event) =>
-                                setSettingsData({
-                                  ...settingsData,
-                                  [field.key]:
-                                    field.key === "taxRate"
-                                      ? Number(event.target.value) / 100
-                                      : Number(event.target.value)
-                                })
-                              }
+                              value={settingsNumericInputs[field.key]}
+                              aria-invalid={Boolean(fieldError)}
+                              aria-describedby={fieldError ? errorId : undefined}
+                              onChange={(event) => {
+                                const rawValue = event.target.value;
+                                setSettingsNumericInputs((current) => ({
+                                  ...current,
+                                  [field.key]: rawValue
+                                }));
+                                setSettingsNumericErrors((current) => {
+                                  if (!current[field.key]) return current;
+                                  const next = { ...current };
+                                  delete next[field.key];
+                                  return next;
+                                });
+                              }}
+                              onBlur={() => {
+                                const result = validateSettingsNumericInput(
+                                  field.key,
+                                  settingsNumericInputs[field.key]
+                                );
+                                if (result.error) {
+                                  setSettingsNumericErrors((current) => ({
+                                    ...current,
+                                    [field.key]: result.error
+                                  }));
+                                  return;
+                                }
+                                setSettingsNumericErrors((current) => {
+                                  const next = { ...current };
+                                  delete next[field.key];
+                                  return next;
+                                });
+                                setSettingsData((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        [field.key]: result.value as number
+                                      }
+                                    : current
+                                );
+                              }}
+                              onWheel={(event) => event.currentTarget.blur()}
                               className={`min-h-12 w-full rounded-xl border border-border bg-background pr-8 text-sm font-bold text-foreground outline-none focus:border-primary ${
                                 field.prefix ? "pl-7" : "pl-4"
-                              }`}
+                              } ${fieldError ? "border-red-500/60 focus:border-red-500" : ""}`}
                             />
                             {field.suffix && (
                               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-black text-muted-foreground">
@@ -3789,8 +4166,18 @@ export default function AdminDashboard() {
                               </span>
                             )}
                           </span>
+                          {fieldError && (
+                            <span
+                              id={errorId}
+                              role="alert"
+                              className="mt-1.5 block text-xs font-semibold text-red-400"
+                            >
+                              {fieldError}
+                            </span>
+                          )}
                         </label>
-                      ))}
+                        );
+                      })}
                     </div>
 
                     <div className="mt-5 grid gap-3 sm:grid-cols-2">
@@ -4115,7 +4502,7 @@ export default function AdminDashboard() {
   if (authStatus === "unauthorized") return null;
 
   return (
-    <div className="min-h-screen bg-background flex font-body text-foreground selection:bg-primary/30">
+    <div className="flex h-[100dvh] max-h-[100dvh] w-full max-w-full overflow-hidden bg-background font-body text-foreground selection:bg-primary/30">
       {isMobileNavigationOpen && (
         <div className="fixed inset-0 z-50 md:hidden">
           <button
@@ -4133,7 +4520,7 @@ export default function AdminDashboard() {
             role="dialog"
             aria-modal="true"
             aria-label="Admin navigation"
-            className="relative flex h-[100dvh] w-[min(20rem,calc(100vw-2rem))] flex-col overflow-y-auto border-r border-border bg-card shadow-2xl"
+            className="admin-scrollbar relative flex h-[100dvh] w-[min(20rem,calc(100vw-2rem))] flex-col overflow-y-auto border-r border-border bg-card shadow-2xl"
           >
             <div className="flex items-center justify-between border-b border-border/50 p-5">
               <div className="flex min-w-0 items-center gap-3">
@@ -4223,7 +4610,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      <aside className="hidden md:flex flex-col w-64 border-r border-border bg-card/50 backdrop-blur-xl sticky top-0 h-screen overflow-y-auto">
+      <aside className="admin-scrollbar hidden h-full min-h-0 w-64 shrink-0 flex-col overflow-y-auto border-r border-border bg-card/50 backdrop-blur-xl md:flex">
         <div className="p-6 pb-2 border-b border-border/50">
           <div className="flex flex-col items-center">
             <Image src="/images/logo-watermark.png" alt="Al-Arab" width={68} height={68} className="h-14 w-auto object-contain drop-shadow-md mb-2" />
@@ -4252,8 +4639,8 @@ export default function AdminDashboard() {
         </nav>
       </aside>
 
-      <main className="flex-1 flex flex-col h-screen overflow-y-auto relative">
-        <header className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-border bg-background/80 p-3 backdrop-blur-md sm:p-4 md:p-6">
+      <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="z-10 flex shrink-0 items-center justify-between gap-2 border-b border-border bg-background/80 p-3 backdrop-blur-md sm:p-4 md:p-6">
           <div className="flex min-w-0 items-center gap-2 sm:gap-3">
             <button
               ref={mobileMenuButtonRef}
@@ -4335,8 +4722,10 @@ export default function AdminDashboard() {
           </div>
         </header>
 
-        <div className="p-6 max-w-7xl mx-auto w-full">
-          {renderContent()}
+        <div className="admin-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+          <div className="mx-auto w-full max-w-7xl p-6">
+            {renderContent()}
+          </div>
         </div>
       </main>
 

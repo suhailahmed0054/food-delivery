@@ -25,7 +25,7 @@ test("delivery orders follow the complete admin workflow", () => {
   );
 });
 
-test("dine-in orders skip out for delivery", () => {
+test("dine-in orders use served and completed instead of delivery states", () => {
   assert.deepEqual(
     getAllowedNextOrderStatuses("pending", "dine_in", "admin"),
     ["accepted", "cancelled"]
@@ -40,7 +40,30 @@ test("dine-in orders skip out for delivery", () => {
   );
   assert.deepEqual(
     getAllowedNextOrderStatuses("ready", "dine_in", "admin"),
-    ["delivered"]
+    ["served"]
+  );
+  assert.deepEqual(
+    getAllowedNextOrderStatuses("served", "dine_in", "admin"),
+    ["completed"]
+  );
+});
+
+test("takeaway orders use collected and completed instead of delivery states", () => {
+  assert.deepEqual(
+    getAllowedNextOrderStatuses("placed", "takeaway", "admin"),
+    ["accepted", "cancelled"]
+  );
+  assert.deepEqual(
+    getAllowedNextOrderStatuses("preparing", "takeaway", "admin"),
+    ["ready", "cancelled"]
+  );
+  assert.deepEqual(
+    getAllowedNextOrderStatuses("ready_for_pickup", "takeaway", "admin"),
+    ["collected", "cancelled"]
+  );
+  assert.deepEqual(
+    getAllowedNextOrderStatuses("collected", "takeaway", "admin"),
+    ["completed"]
   );
 });
 
@@ -51,6 +74,10 @@ test("completed, cancelled, and unknown statuses cannot advance", () => {
   );
   assert.deepEqual(
     getAllowedNextOrderStatuses("cancelled", "delivery", "admin"),
+    []
+  );
+  assert.deepEqual(
+    getAllowedNextOrderStatuses("completed", "takeaway", "admin"),
     []
   );
   assert.deepEqual(

@@ -154,14 +154,17 @@ app.use((error: Error & { status?: number; type?: string }, _req: Request, res: 
   return next(error);
 });
 function readinessStatus() {
-  const database = isDatabaseConnected() ? "connected" : "disconnected";
+  const database = !env.mongoUri
+    ? "disabled"
+    : isDatabaseConnected()
+      ? "connected"
+      : "disconnected";
   const redis = !env.redisUrl
     ? "disabled"
     : isRedisConnected()
       ? "connected"
       : "disconnected";
-  const ready = !env.isProduction ||
-    (database === "connected" && redis !== "disconnected");
+  const ready = database !== "disconnected" && redis !== "disconnected";
   return { database, redis, ready };
 }
 

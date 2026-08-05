@@ -47,7 +47,7 @@ async function migrateMenuImages() {
     );
     const updated = await MenuItem.updateOne(
       { _id: menuItem._id, image: menuItem.image },
-      { $set: { image: uploaded.imageUrl } }
+      { $set: { image: uploaded.imageUrl, imagePublicId: uploaded.publicId } }
     );
 
     if (updated.modifiedCount === 1) {

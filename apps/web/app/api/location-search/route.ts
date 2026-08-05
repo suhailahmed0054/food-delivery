@@ -63,7 +63,8 @@ export async function GET(request: NextRequest) {
       `https://photon.komoot.io/api/?${search.toString()}`,
       {
         headers: { Accept: "application/geo+json, application/json" },
-        next: { revalidate: 3600 }
+        next: { revalidate: 3600 },
+        signal: AbortSignal.timeout(10_000)
       }
     );
     if (!response.ok) {

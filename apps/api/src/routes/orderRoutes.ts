@@ -5,12 +5,12 @@ import {
   getOrderTracking,
   listOrders,
   quoteOrder,
+  markOrderPaymentReceived,
   updateOrderStatus,
   cancelOrder
 } from "../controllers/orderController";
 import {
   optionalCustomerAuth,
-  requireCustomerAuth,
   requireAuth,
   requireRole
 } from "../middleware/auth";
@@ -21,9 +21,10 @@ export const orderRouter = Router();
 
 orderRouter.get("/", requireAuth, requireRole("admin", "kitchen"), asyncHandler(listOrders));
 orderRouter.post("/quote", rateLimit(30, 60_000, "order-quote"), asyncHandler(quoteOrder));
-orderRouter.post("/", rateLimit(10, 5 * 60_000, "order-create"), requireCustomerAuth, asyncHandler(createOrder));
+orderRouter.post("/", rateLimit(10, 5 * 60_000, "order-create"), optionalCustomerAuth, asyncHandler(createOrder));
 orderRouter.post("/:id/tracking", rateLimit(30, 60_000, "order-tracking"), asyncHandler(getOrderTracking));
 orderRouter.patch("/:id/status", requireAuth, requireRole("admin", "kitchen"), asyncHandler(updateOrderStatus));
+orderRouter.patch("/:id/payment-received", requireAuth, requireRole("admin"), asyncHandler(markOrderPaymentReceived));
 orderRouter.post("/:id/cancel", rateLimit(10, 15 * 60_000, "order-cancel"), optionalCustomerAuth, asyncHandler(cancelOrder));
 orderRouter.patch(
   "/:id/assign-delivery",

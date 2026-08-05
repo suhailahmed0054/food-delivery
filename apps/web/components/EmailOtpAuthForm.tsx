@@ -10,6 +10,10 @@ import {
   verifyCustomerEmailOtp
 } from "@/lib/api";
 import { getSafeReturnTo, isCheckoutReturnPath } from "@/lib/auth-navigation";
+import {
+  getOrderTypeAuthenticationMessage,
+  parseCustomerOrderType
+} from "@/lib/order-type-session";
 
 type EmailOtpAuthFormProps = {
   source: "login" | "register";
@@ -19,11 +23,17 @@ export function EmailOtpAuthForm({ source }: EmailOtpAuthFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedReturnTo = searchParams.get("returnTo");
+  const requestedOrderType = parseCustomerOrderType(
+    searchParams.get("orderType")
+  );
   const returnTo = useMemo(
     () => getSafeReturnTo(requestedReturnTo),
     [requestedReturnTo]
   );
   const isCheckoutRedirect = isCheckoutReturnPath(requestedReturnTo);
+  const checkoutAuthenticationMessage = requestedOrderType
+    ? getOrderTypeAuthenticationMessage(requestedOrderType)
+    : "Please sign in to continue to checkout.";
   const [step, setStep] = useState<"email" | "otp">("email");
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
@@ -96,8 +106,13 @@ export function EmailOtpAuthForm({ source }: EmailOtpAuthFormProps) {
   };
 
   const alternatePath = source === "login" ? "/register" : "/login";
-  const alternateHref = requestedReturnTo
-    ? `${alternatePath}?returnTo=${encodeURIComponent(returnTo)}`
+  const alternateQuery = new URLSearchParams();
+  if (requestedReturnTo) alternateQuery.set("returnTo", returnTo);
+  if (requestedOrderType && requestedOrderType !== "dine_in") {
+    alternateQuery.set("orderType", requestedOrderType);
+  }
+  const alternateHref = alternateQuery.size
+    ? `${alternatePath}?${alternateQuery.toString()}`
     : alternatePath;
 
   return (
@@ -124,7 +139,7 @@ export function EmailOtpAuthForm({ source }: EmailOtpAuthFormProps) {
             role="status"
             className="mt-5 rounded-lg border border-[#d4af37]/50 bg-[#d4af37]/10 px-3 py-2 text-center text-sm font-bold text-[#6f5900]"
           >
-            Please sign in to continue to checkout.
+            {checkoutAuthenticationMessage}
           </p>
         )}
 

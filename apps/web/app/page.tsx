@@ -14,7 +14,7 @@ import {
   DeliveryLocationSearch,
   type DeliveryLocationSearchResult
 } from "@/components/DeliveryLocationSearch";
-import { fetchMenu, fetchPublicRestaurantSettings } from "@/lib/api";
+import { fetchMenu, fetchPublicRestaurantSettings, fetchWithTimeout } from "@/lib/api";
 import { menuItems, restaurant } from "@/lib/data";
 import { clearTableSession } from "@/lib/table-session";
 import { useCartStore } from "@/store/cart-store";
@@ -28,6 +28,7 @@ import {
   readSessionDeliveryLocation
 } from "@/lib/delivery-location-session";
 import { getPreciseCurrentPosition } from "@/lib/precise-geolocation";
+import { persistCustomerOrderType } from "@/lib/order-type-session";
 import {
   AlertTriangle,
   ArrowRight,
@@ -46,6 +47,7 @@ import {
   MapPinned,
   Menu,
   PhoneCall,
+  Package,
   QrCode,
   Search,
   ShieldCheck,
@@ -165,10 +167,18 @@ export default function Home() {
   const chooseDelivery = useCallback(() => {
     if (deliveryLocation.status === "outside") return;
     clearTableSession();
+    persistCustomerOrderType("delivery");
     router.push("/mobile");
   }, [deliveryLocation.status, router]);
 
   const handleTableResolved = useCallback(() => {
+    persistCustomerOrderType("dine_in");
+    router.push("/mobile");
+  }, [router]);
+
+  const chooseTakeaway = useCallback(() => {
+    clearTableSession();
+    persistCustomerOrderType("takeaway");
     router.push("/mobile");
   }, [router]);
 
@@ -194,8 +204,10 @@ export default function Home() {
         let displayName = "Current location";
 
         try {
-          const response = await fetch(
-            `/api/reverse-geocode?lat=${encodeURIComponent(latitude)}&lng=${encodeURIComponent(longitude)}`
+          const response = await fetchWithTimeout(
+            `/api/reverse-geocode?lat=${encodeURIComponent(latitude)}&lng=${encodeURIComponent(longitude)}`,
+            {},
+            10_000
           );
           if (response.ok) {
             const location = (await response.json()) as { displayName?: string };
@@ -464,6 +476,10 @@ export default function Home() {
               <button type="button" onClick={() => setShowDineInScanner(true)}>
                 <QrCode size={18} aria-hidden="true" />
                 Dine-in
+              </button>
+              <button type="button" onClick={chooseTakeaway}>
+                <Package size={18} aria-hidden="true" />
+                Takeaway
               </button>
               <Link href="/mobile">
                 <Search size={18} aria-hidden="true" />

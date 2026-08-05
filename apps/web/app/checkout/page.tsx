@@ -33,12 +33,18 @@ import {
   createOrder,
   fetchCustomerAccount,
   fetchPublicRestaurantSettings,
+  fetchWithTimeout,
   quoteOrder,
   type OrderQuoteData
 } from "@/lib/api";
 import { clearTableSession, readStoredTableSession, type TableSession } from "@/lib/table-session";
 import { persistSessionDeliveryAddress, readSessionDeliveryAddress } from "@/lib/delivery-session";
-import { parseSavedOrders, type SavedOrder } from "@/lib/saved-orders";
+import {
+  parseSavedOrders,
+  saveOrderTrackingToken,
+  serializeSavedOrders,
+  type SavedOrder
+} from "@/lib/saved-orders";
 import { useCartStore } from "@/store/cart-store";
 import {
   OUTSIDE_DELIVERY_MESSAGE,
@@ -48,6 +54,13 @@ import {
 import { readSessionDeliveryLocation } from "@/lib/delivery-location-session";
 import { getPreciseCurrentPosition } from "@/lib/precise-geolocation";
 import { getCheckoutLoginPath } from "@/lib/auth-navigation";
+import {
+  getOrderTypeAuthenticationMessage,
+  orderTypeRequiresAuthentication,
+  persistCustomerOrderType,
+  readCustomerOrderType,
+  type CustomerOrderType
+} from "@/lib/order-type-session";
 
 const LocationPicker = dynamic(
   () => import("@/components/LocationPicker"),
@@ -93,7 +106,11 @@ type DeliveryLocationCheck = {
   message?: string;
 };
 
-type CheckoutAuthStatus = "checking" | "authenticated" | "redirecting";
+type CheckoutAuthStatus =
+  | "checking"
+  | "authenticated"
+  | "guest"
+  | "redirecting";
 
 const defaultAddresses: SavedAddress[] = [];
 
@@ -135,9 +152,12 @@ export default function CheckoutPage() {
   const [notice, setNotice] = useState("");
   const [isPlacing, setIsPlacing] = useState(false);
   const checkoutIdempotencyKeyRef = useRef<string | null>(null);
+  const initialCheckoutOrderTypeRef = useRef<CustomerOrderType>("delivery");
   const [isSessionVerifying, setIsSessionVerifying] = useState(false);
   const [authStatus, setAuthStatus] = useState<CheckoutAuthStatus>("checking");
+  const [isCheckoutStateReady, setIsCheckoutStateReady] = useState(false);
   const [tableSession, setTableSession] = useState<TableSession | null>(null);
+  const [orderType, setOrderType] = useState<CustomerOrderType>("delivery");
   const [tableError, setTableError] = useState("");
   const [isTableLoading, setIsTableLoading] = useState(false);
   const [showDineInScanner, setShowDineInScanner] = useState(false);
@@ -172,7 +192,11 @@ export default function CheckoutPage() {
     [items]
   );
   const tableNumber = tableSession?.tableNumber ?? null;
-  const isDineIn = Boolean(tableSession);
+  const isDineIn = orderType === "dine_in";
+  const isDelivery = orderType === "delivery";
+  const isTakeaway = orderType === "takeaway";
+  const canUseCheckout =
+    authStatus === "authenticated" || authStatus === "guest";
   const subtotal = serverQuote?.subtotal ?? clientSubtotal;
   const discountAmount = serverQuote?.discount ?? 0;
   const tax = serverQuote?.tax ?? 0;
@@ -206,18 +230,31 @@ export default function CheckoutPage() {
 
   const handleTableResolved = useCallback((session: TableSession) => {
     setTableSession(session);
+    setOrderType("dine_in");
+    persistCustomerOrderType("dine_in");
     setTableError("");
   }, []);
 
   const switchToDelivery = useCallback(() => {
     clearTableSession();
     setTableSession(null);
+    setOrderType("delivery");
+    persistCustomerOrderType("delivery");
+    setTableError("");
+    setShowDineInScanner(false);
+  }, []);
+
+  const switchToTakeaway = useCallback(() => {
+    clearTableSession();
+    setTableSession(null);
+    setOrderType("takeaway");
+    persistCustomerOrderType("takeaway");
     setTableError("");
     setShowDineInScanner(false);
   }, []);
 
   useEffect(() => {
-    if (authStatus !== "authenticated") return;
+    if (!canUseCheckout) return;
 
     if (items.length === 0) {
       setServerQuote(null);
@@ -240,7 +277,7 @@ export default function CheckoutPage() {
             addOns: [...line.customization.addOns]
           }
         })),
-        orderType: isDineIn ? "dine_in" : "delivery",
+        orderType,
         couponCode: appliedCoupon || undefined,
         phone: selectedAddress?.phone
       })
@@ -265,7 +302,7 @@ export default function CheckoutPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [appliedCoupon, authStatus, isDineIn, items, selectedAddress?.phone]);
+  }, [appliedCoupon, canUseCheckout, items, orderType, selectedAddress?.phone]);
 
   useEffect(() => {
     if (promoCode && !promo && !appliedCoupon) {
@@ -275,29 +312,16 @@ export default function CheckoutPage() {
   }, [appliedCoupon, promo, promoCode]);
 
   useEffect(() => {
-    if (authStatus !== "authenticated") return;
-
-    setTableSession(readStoredTableSession());
-    try {
-      const storedProfile = window.localStorage.getItem("al-arab-profile");
-      const storedUser = window.localStorage.getItem("al-arab-user");
-      const profile = storedProfile
-        ? (JSON.parse(storedProfile) as { email?: unknown })
-        : null;
-      const user = storedUser
-        ? (JSON.parse(storedUser) as { name?: unknown; email?: unknown })
-        : null;
-      const savedEmail = profile?.email ?? user?.email;
-      if (typeof user?.name === "string") {
-        setCustomer(user.name);
-      }
-      if (typeof savedEmail === "string") {
-        setCustomerEmail(savedEmail);
-      }
-    } catch {
-      // Checkout remains usable when an old local profile cannot be parsed.
-    }
-
+    const storedTable = readStoredTableSession();
+    setTableSession(storedTable);
+    const storedOrderType = readCustomerOrderType();
+    const restoredOrderType = storedTable
+      ? "dine_in"
+      : storedOrderType === "takeaway"
+        ? "takeaway"
+        : "delivery";
+    initialCheckoutOrderTypeRef.current = restoredOrderType;
+    setOrderType(restoredOrderType);
     const storedLocation = readSessionDeliveryLocation();
     if (storedLocation) {
       const deliveryZone = evaluateDeliveryLocation({
@@ -342,9 +366,11 @@ export default function CheckoutPage() {
       ]);
       setSelectedAddressId(sessionAddress.id);
     }
-  }, [authStatus]);
+    setIsCheckoutStateReady(true);
+  }, []);
 
   useEffect(() => {
+    if (!isCheckoutStateReady) return;
     let cancelled = false;
 
     void fetchCustomerAccount()
@@ -401,15 +427,21 @@ export default function CheckoutPage() {
       .catch(() => {
         if (cancelled) return;
 
-        setAuthStatus("redirecting");
-        const currentPath = `${window.location.pathname}${window.location.search}`;
-        router.replace(getCheckoutLoginPath(currentPath));
+        const initialOrderType = initialCheckoutOrderTypeRef.current;
+        if (orderTypeRequiresAuthentication(initialOrderType)) {
+          setAuthStatus("redirecting");
+          const currentPath = `${window.location.pathname}${window.location.search}`;
+          router.replace(getCheckoutLoginPath(currentPath, initialOrderType));
+          return;
+        }
+        setCustomerAccountId(null);
+        setAuthStatus("guest");
       });
 
     return () => {
       cancelled = true;
     };
-  }, [router]);
+  }, [isCheckoutStateReady, router]);
 
   function updateQuantity(lineId: string, quantity: number) {
     if (quantity < 1) {
@@ -444,8 +476,10 @@ export default function CheckoutPage() {
     let displayName = "Pinned location";
 
     try {
-      const response = await fetch(
-        `/api/reverse-geocode?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`
+      const response = await fetchWithTimeout(
+        `/api/reverse-geocode?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`,
+        {},
+        10_000
       );
       if (!response.ok) throw new Error("Reverse geocoding failed");
       const data = await response.json() as { displayName?: string };
@@ -585,16 +619,19 @@ export default function CheckoutPage() {
 
     if (isSessionVerifying || isPlacing) return;
 
-    setIsSessionVerifying(true);
-    try {
-      await fetchCustomerAccount();
-    } catch {
-      setAuthStatus("redirecting");
-      const currentPath = `${window.location.pathname}${window.location.search}`;
-      router.replace(getCheckoutLoginPath(currentPath));
-      return;
-    } finally {
-      setIsSessionVerifying(false);
+    if (orderTypeRequiresAuthentication(orderType)) {
+      setIsSessionVerifying(true);
+      try {
+        await fetchCustomerAccount();
+      } catch {
+        setAuthStatus("redirecting");
+        setNotice(getOrderTypeAuthenticationMessage(orderType));
+        const currentPath = `${window.location.pathname}${window.location.search}`;
+        router.replace(getCheckoutLoginPath(currentPath, orderType));
+        return;
+      } finally {
+        setIsSessionVerifying(false);
+      }
     }
 
     if (!items.length) {
@@ -607,12 +644,12 @@ export default function CheckoutPage() {
       return;
     }
 
-    if (!customer.trim() || (!isDineIn && !selectedAddress)) {
-      setNotice(isDineIn ? "Enter your name before placing the order." : "Enter your name and select a delivery address.");
+    if (!customer.trim() || (isDelivery && !selectedAddress)) {
+      setNotice(isDelivery ? "Enter your name and select a delivery address." : "Enter your name before placing the order.");
       return;
     }
 
-    if (!isDineIn && !selectedDeliveryZone?.isWithinDeliveryZone) {
+    if (isDelivery && !selectedDeliveryZone?.isWithinDeliveryZone) {
       setNotice(
         selectedDeliveryZone
           ? OUTSIDE_DELIVERY_MESSAGE
@@ -673,31 +710,27 @@ export default function CheckoutPage() {
           couponCode: appliedCoupon || undefined,
           paymentMethod: "cash_on_delivery",
           paymentStatus: "pending",
-          orderType: isDineIn ? "dine_in" : "delivery",
+          orderType,
           tableToken: tableSession?.token,
           customerName: customer.trim(),
-          phone: isDineIn ? undefined : selectedAddress?.phone,
+          phone: isDelivery ? selectedAddress?.phone : undefined,
           email: customerEmail.trim() || undefined,
-          address: isDineIn
-            ? undefined
-            : [selectedAddress?.street, selectedAddress?.city]
+          address: isDelivery
+            ? [selectedAddress?.street, selectedAddress?.city]
                 .filter(Boolean)
-                .join(", "),
-          deliveryLatitude: isDineIn
-            ? undefined
-            : selectedAddress?.latitude,
-          deliveryLongitude: isDineIn
-            ? undefined
-            : selectedAddress?.longitude,
+                .join(", ")
+            : undefined,
+          deliveryLatitude: isDelivery ? selectedAddress?.latitude : undefined,
+          deliveryLongitude: isDelivery ? selectedAddress?.longitude : undefined,
           deliveryTime,
           specialInstructions: instructions.trim() || undefined
         },
         checkoutIdempotencyKeyRef.current
       );
       const orderId = apiOrder.orderNumber;
-      const formattedAddress = isDineIn
-        ? ""
-        : [selectedAddress?.street, selectedAddress?.city].filter(Boolean).join(", ");
+      const formattedAddress = isDelivery
+        ? [selectedAddress?.street, selectedAddress?.city].filter(Boolean).join(", ")
+        : "";
 
       const order: SavedOrder = {
         id: orderId,
@@ -705,16 +738,14 @@ export default function CheckoutPage() {
         phone: selectedAddress?.phone ?? "",
         email: customerEmail.trim() || undefined,
         address: formattedAddress,
-        deliveryLatitude: isDineIn ? undefined : selectedAddress?.latitude,
-        deliveryLongitude: isDineIn ? undefined : selectedAddress?.longitude,
-        deliveryDistanceKm: isDineIn
-          ? undefined
-          : selectedDeliveryZone?.distanceKm,
+        deliveryLatitude: isDelivery ? selectedAddress?.latitude : undefined,
+        deliveryLongitude: isDelivery ? selectedAddress?.longitude : undefined,
+        deliveryDistanceKm: isDelivery ? selectedDeliveryZone?.distanceKm : undefined,
         deliveryTime,
         instructions: instructions.trim(),
         paymentMethod: "cash_on_delivery",
         paymentStatus: apiOrder.paymentStatus ?? "pending",
-        orderType: isDineIn ? "dine_in" : "delivery",
+        orderType,
         tableNumber: tableNumber ? String(tableNumber) : undefined,
         status: apiOrder.status || (isDineIn ? "pending" : "placed"),
         trackingToken: apiOrder.trackingToken,
@@ -742,9 +773,10 @@ export default function CheckoutPage() {
 
       const stored = window.localStorage.getItem("al-arab-orders");
       const orders = parseSavedOrders(stored);
+      saveOrderTrackingToken(order.id, order.trackingToken);
       window.localStorage.setItem(
         "al-arab-orders",
-        JSON.stringify([
+        serializeSavedOrders([
           order,
           ...orders.filter((savedOrder) => savedOrder.id !== order.id)
         ])
@@ -761,7 +793,7 @@ export default function CheckoutPage() {
     }
   }
 
-  if (authStatus !== "authenticated") {
+  if (!canUseCheckout) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#080808] px-6 text-white">
         <div role="status" className="flex flex-col items-center gap-4 text-center">
@@ -997,17 +1029,17 @@ export default function CheckoutPage() {
               </span>
               <div>
                 <h2 className="text-base font-bold text-white sm:text-lg">Order Details</h2>
-                <p className="text-[11px] text-white/50 sm:text-xs">Delivery or Dine-in</p>
+                <p className="text-[11px] text-white/50 sm:text-xs">Delivery, takeaway or dine-in</p>
               </div>
             </div>
 
             {!isTableLoading && (
-              <div className="checkout-mode-grid grid grid-cols-2 gap-3 mb-6">
+              <div className="checkout-mode-grid grid grid-cols-3 gap-2 mb-6 sm:gap-3">
                 <button
                   type="button"
                   onClick={switchToDelivery}
-                  aria-pressed={!tableSession}
-                  className={`checkout-choice-button flex flex-col items-center justify-center gap-1.5 rounded-full border p-3 transition-all duration-300 sm:p-4 ${!tableSession ? "is-selected" : ""}`}
+                  aria-pressed={isDelivery}
+                  className={`checkout-choice-button flex min-w-0 flex-col items-center justify-center gap-1.5 rounded-full border p-2 transition-all duration-300 sm:p-4 ${isDelivery ? "is-selected" : ""}`}
                 >
                   <Bike size={24} />
                   <span className="text-xs font-black sm:text-sm">Delivery</span>
@@ -1015,9 +1047,19 @@ export default function CheckoutPage() {
                 </button>
                 <button
                   type="button"
+                  onClick={switchToTakeaway}
+                  aria-pressed={isTakeaway}
+                  className={`checkout-choice-button flex min-w-0 flex-col items-center justify-center gap-1.5 rounded-full border p-2 transition-all duration-300 sm:p-4 ${isTakeaway ? "is-selected" : ""}`}
+                >
+                  <ShoppingBag size={24} />
+                  <span className="text-[11px] font-black sm:text-sm">Takeaway</span>
+                  <small>Pick up</small>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setShowDineInScanner(true)}
-                  aria-pressed={Boolean(tableSession)}
-                  className={`checkout-choice-button flex flex-col items-center justify-center gap-1.5 rounded-full border p-3 transition-all duration-300 sm:p-4 ${tableSession ? "is-selected" : ""}`}
+                  aria-pressed={isDineIn}
+                  className={`checkout-choice-button flex min-w-0 flex-col items-center justify-center gap-1.5 rounded-full border p-2 transition-all duration-300 sm:p-4 ${isDineIn ? "is-selected" : ""}`}
                 >
                   <QrCode size={24} />
                   <span className="text-xs font-black sm:text-sm">Dine-In</span>
@@ -1026,8 +1068,20 @@ export default function CheckoutPage() {
               </div>
             )}
 
+            {isDineIn && authStatus === "guest" && (
+              <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/10 px-4 py-3 text-sm font-semibold text-white/75">
+                <span>{getOrderTypeAuthenticationMessage("dine_in")}</span>
+                <Link
+                  href={getCheckoutLoginPath("/checkout")}
+                  className="font-black text-primary hover:underline"
+                >
+                  Sign in instead
+                </Link>
+              </div>
+            )}
+
             {/* Delivery Address Selection */}
-            {!isDineIn && (
+            {isDelivery && (
               <div className="space-y-4 pt-4 border-t border-white/10">
                 <div className="flex items-center justify-between">
                   <p className="text-[10px] font-black uppercase tracking-wider text-white/50">Delivery Address</p>
@@ -1122,7 +1176,7 @@ export default function CheckoutPage() {
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2 pt-5 border-t border-white/10">
               <label className="block">
-                <span className="mb-1.5 block text-[10px] font-black uppercase tracking-wider text-white/50">{isDineIn ? "Preparation time" : "Delivery time"}</span>
+                <span className="mb-1.5 block text-[10px] font-black uppercase tracking-wider text-white/50">{isDelivery ? "Delivery time" : isTakeaway ? "Pickup time" : "Preparation time"}</span>
                 <select
                   value={deliveryTime}
                   onChange={(event) => setDeliveryTime(event.target.value)}
@@ -1163,7 +1217,7 @@ export default function CheckoutPage() {
               <div className="checkout-choice-button is-selected relative flex min-h-14 items-center justify-center gap-2.5 overflow-hidden rounded-full border px-3 text-xs font-black sm:px-4 sm:text-sm">
                 <Wallet size={18} />
                 <span className="relative z-10">
-                  {isDineIn ? "Pay at Table" : "Cash on Delivery"}
+                  {isDineIn ? "Pay at Table" : isTakeaway ? "Pay at Pickup" : "Cash on Delivery"}
                 </span>
               </div>
             </div>
@@ -1340,7 +1394,7 @@ export default function CheckoutPage() {
                 <span className="font-semibold text-white">{money(tax)}</span>
               </div>
               <div className="flex justify-between gap-3 text-white/70">
-                <span>{isDineIn ? "Service fee" : "Delivery fee"}</span>
+                <span>{isDelivery ? "Delivery fee" : "Service fee"}</span>
                 <span className="font-semibold text-white">{money(deliveryFee)}</span>
               </div>
               <div className="mt-2 flex items-center justify-between gap-3 border-t border-white/10 pt-4">
@@ -1368,7 +1422,7 @@ export default function CheckoutPage() {
                 Boolean(serverQuote?.coupon && !serverQuote.coupon.applied) ||
                 isTableLoading ||
                 Boolean(tableError) ||
-                (!isDineIn &&
+                (isDelivery &&
                   !selectedDeliveryZone?.isWithinDeliveryZone)
               }
               className="checkout-confirm-button relative mt-6 flex h-14 w-full items-center justify-center gap-2 overflow-hidden rounded-full border font-black transition-all hover:scale-[1.02] active:scale-[0.98] disabled:cursor-not-allowed disabled:hover:scale-100"
@@ -1386,7 +1440,7 @@ export default function CheckoutPage() {
                       ? "Prices Unavailable"
                       : serverQuote && !serverQuote.canOrder
                         ? `Add ${money(serverQuote.amountToMinimum)} more`
-                  : !isDineIn &&
+                  : isDelivery &&
                     !selectedDeliveryZone?.isWithinDeliveryZone
                   ? "Check Location to Order"
                   : "Confirm & Pay"}

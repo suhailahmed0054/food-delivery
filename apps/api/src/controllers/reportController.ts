@@ -7,7 +7,7 @@ import { listLocalReviews } from "../services/localReviewStore";
 type ReportOrder = {
   total: number;
   status: string;
-  orderType: "delivery" | "dine_in";
+  orderType: "delivery" | "takeaway" | "dine_in";
   paymentMethod?: string;
   paymentStatus?: string;
   tableNumber?: string;
@@ -103,6 +103,7 @@ function summarizeOrders(
       averageOrderValue:
         revenueOrders.length > 0 ? Math.round(revenue / revenueOrders.length) : 0,
       deliveryOrders: filtered.filter((order) => order.orderType === "delivery").length,
+      takeawayOrders: filtered.filter((order) => order.orderType === "takeaway").length,
       dineInOrders: filtered.filter((order) => order.orderType === "dine_in").length,
       paidOrders: filtered.filter((order) => order.paymentStatus === "paid").length,
       cancelledOrders: filtered.filter(

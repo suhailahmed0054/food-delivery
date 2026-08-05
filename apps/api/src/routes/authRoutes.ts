@@ -45,6 +45,17 @@ const loginSchema = z.object({
   password: z.string().min(1).max(72)
 });
 
+const adminRegistrationSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  email: z.string().trim().email().max(320).transform((value) => value.toLowerCase()),
+  password: z.string().min(12).max(72),
+  confirmPassword: z.string().min(1).max(72),
+  signupCode: z.string().trim().min(1).max(256)
+}).refine((value) => value.password === value.confirmPassword, {
+  message: "Passwords do not match",
+  path: ["confirmPassword"]
+});
+
 const emailOtpRequestSchema = z.object({
   email: z.string().trim().email().max(320).transform((value) => value.toLowerCase())
 });
@@ -90,6 +101,12 @@ function createAdminTokens(user: { id: string; role: "admin" }) {
     accessToken: signAccessToken(user),
     refreshToken: signRefreshToken(user)
   };
+}
+
+function safeSecretMatch(first: string, second: string) {
+  const firstHash = createHash("sha256").update(first).digest();
+  const secondHash = createHash("sha256").update(second).digest();
+  return timingSafeEqual(firstHash, secondHash);
 }
 
 function isLoopbackAddress(address: string | undefined) {
@@ -243,6 +260,76 @@ authRouter.post(
 );
 
 authRouter.post(
+  "/admin/register",
+  rateLimit(3, 60 * 60_000, "admin-register", accountRateLimitKey),
+  asyncHandler(async (req, res) => {
+    const parsed = adminRegistrationSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const passwordMismatch = parsed.error.issues.some(
+        (issue) => issue.path[0] === "confirmPassword"
+      );
+      return res.status(400).json({
+        message: passwordMismatch
+          ? "Passwords do not match"
+          : "Enter valid administrator profile details"
+      });
+    }
+    if (!env.adminSignupCode) {
+      return res.status(503).json({
+        message: "Administrator profile setup is not configured"
+      });
+    }
+    if (databaseUnavailable()) {
+      return res.status(503).json({
+        message: "Administrator profile setup is temporarily unavailable"
+      });
+    }
+    if (!safeSecretMatch(parsed.data.signupCode, env.adminSignupCode)) {
+      return res.status(403).json({ message: "Unable to create administrator profile" });
+    }
+
+    const [existingAdmin, existingEmail] = await Promise.all([
+      User.exists({ role: "admin" }),
+      User.exists({ email: parsed.data.email })
+    ]);
+    if (existingAdmin) {
+      return res.status(409).json({
+        message: "Administrator profile setup has already been completed"
+      });
+    }
+    if (existingEmail) {
+      return res.status(409).json({ message: "Unable to create administrator profile" });
+    }
+
+    try {
+      const passwordHash = await bcrypt.hash(parsed.data.password, 12);
+      const user = new User({
+        name: parsed.data.name,
+        email: parsed.data.email,
+        passwordHash,
+        role: "admin",
+        emailVerified: true,
+        isBlocked: false,
+        isPrimaryAdmin: true,
+        lastLoginAt: new Date()
+      });
+      const tokens = createAdminTokens({ id: user.id, role: "admin" });
+      user.refreshTokenHash = hashToken(tokens.refreshToken);
+      await user.save();
+      setAdminAuthCookies(res, tokens.accessToken, tokens.refreshToken);
+      return res.status(201).json({ user: publicUser(user) });
+    } catch (error) {
+      if ((error as { code?: number }).code === 11000) {
+        return res.status(409).json({
+          message: "Administrator profile setup has already been completed"
+        });
+      }
+      throw error;
+    }
+  })
+);
+
+authRouter.post(
   "/admin/login",
   rateLimit(5, 15 * 60_000, "admin-login", accountRateLimitKey),
   asyncHandler(async (req, res) => {
@@ -294,6 +381,7 @@ authRouter.post(
 
     const tokens = createAdminTokens({ id: user.id, role: "admin" });
     user.refreshTokenHash = hashToken(tokens.refreshToken);
+    user.lastLoginAt = new Date();
     await user.save();
     setAdminAuthCookies(res, tokens.accessToken, tokens.refreshToken);
     return res.json({ user: publicUser(user) });

@@ -23,6 +23,8 @@ export type UserRecord = {
   email: string;
   emailVerified: boolean;
   passwordHash?: string;
+  isPrimaryAdmin?: boolean;
+  lastLoginAt?: Date;
   phone?: string;
   addresses: CustomerAddress[];
   notificationPreferences: CustomerNotificationPreferences;
@@ -42,6 +44,8 @@ const userSchema = new Schema<UserRecord>(
     email: { type: String, required: true, unique: true },
     emailVerified: { type: Boolean, default: false },
     passwordHash: { type: String, select: false },
+    isPrimaryAdmin: { type: Boolean, default: undefined },
+    lastLoginAt: { type: Date },
     phone: { type: String },
     addresses: [
       {
@@ -70,6 +74,13 @@ const userSchema = new Schema<UserRecord>(
 );
 
 userSchema.index({ role: 1, isBlocked: 1, createdAt: -1 });
+userSchema.index(
+  { isPrimaryAdmin: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { isPrimaryAdmin: true }
+  }
+);
 
 export const User =
   (mongoose.models.User as Model<UserRecord> | undefined) ??

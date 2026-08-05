@@ -54,6 +54,8 @@ At every requested width, check:
 - [ ] Header, hero, selector, category tabs, menu cards, buttons, and bottom
       navigation stay inside the viewport.
 - [ ] Add an item with a size/add-on and confirm the cart indicator updates.
+- [ ] Select each delivery, takeaway, and dine-in mode without overlap or
+      horizontal overflow.
 
 ### Cart
 
@@ -101,6 +103,10 @@ account. Do not alter production data for this verification.
 - [ ] Admin sees the order and confirms it.
 - [ ] Admin moves a delivery order through `Preparing`, `Ready`,
       `Out for Delivery`, and `Delivered`.
+- [ ] Admin completes takeaway through `Collected`/`Completed` and dine-in
+      through `Served`/`Completed`; delivery controls never appear for either.
+- [ ] Admin search, type/status filters, pagination, COD payment received, print,
+      refresh, assignment, and cancellation persist after reload.
 - [ ] Customer tracking and notifications show each change.
 - [ ] Refreshing both applications preserves the final state.
 - [ ] Payment status and assigned delivery person remain correct.

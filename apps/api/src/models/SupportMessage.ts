@@ -13,6 +13,7 @@ const supportMessageSchema = new Schema(
     senderName: { type: String, required: true },
     message: { type: String, required: true },
     images: { type: [String], default: [] },
+    imagePublicIds: { type: [String], default: [], select: false },
     readAt: { type: Date }
   },
   { timestamps: true }
